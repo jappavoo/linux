@@ -315,6 +315,14 @@ config ALTIVEC
 
 	  If in doubt, say Y here.
 
+config DOUBLE_HUMMER
+	bool "Double Hummer Support"
+	depends on BLUEGENE
+	---help---
+	  This option enable kernel support for the double hummer FPU.
+	  This option is only useful for processors which support the
+          double hummer (Blue Gene).
+
 config SPE
 	bool "SPE Support"
 	depends on E200 || E500
@@ -361,7 +369,7 @@ config VIRT_CPU_ACCOUNTING
 	  If in doubt, say Y here.
 
 config SMP
-	depends on PPC_STD_MMU
+	depends on PPC_STD_MMU || BGP
 	bool "Symmetric multi-processing support"
 	---help---
 	  This enables support for systems with more than one CPU. If you have
@@ -388,7 +396,7 @@ config NR_CPUS
 
 config NOT_COHERENT_CACHE
 	bool
-	depends on 4xx || 8xx || E200
+	depends on (4xx && !BGP) || 8xx || E200
 	default y
 
 config CONFIG_CHECK_CACHE_COHERENCY

@@ -1,0 +1,40 @@
+Bluegene NIC driver
+===================
+
+These files contain the source code to a device driver which makes
+BlueGene's tree device accessible as a standard network interface
+card.  The device name is bgnic with a mac address which is composed
+of the Bluegene node ID plus a fixed constant (0xab000000 + node id).
+
+The driver supports broadcast and point-to-point messages.  IP address
+propagation is performed through ARP.  The easiest method is to
+configure the node with an IP address at startup time.  We extended
+/etc/rc.d/rc.network with the following lines:
+
+BGNIC_IP=`echo 0x$BG_UCI | awk '{printf "192.168.%d.%d", $1 / 0x10000 % 0x100, $1 / 0x100 % 0x100}'`
+BGNIC_NM=255.255.0.0
+BGNIC_GW=192.168.2.0
+ifconfig eth0 $BGNIC_IP netmask $BGNIC_NM
+
+This version of the driver has a very small MTU size of 240 bytes.  In
+the next version we will support packet fragmentation with an MTU size
+of up to 64kB.
+
+Maintainers
+===========
+
+The driver was developed as part of the Kittyhawk project by:
+- Volkmar Uhlig (vuhlig@us.ibm.com)
+- Jonathan Appavoo (jappavoo@us.ibm.com)
+- Amos Waterland (awaterl@us.ibm.com)
+
+Revision History
+================
+
+Version 0.1: Initial release.  Basic support for BG's tree network
+  with max MTU size of 240 bytes.
+
+Version 0.2: Separation of tree and NIC driver.  The tree solely acts
+  as a transport layer while the NIC is encapsulated on top.  The NIC
+  is presented as a standard ethernet device.  The tree supports
+  fragmentation of up to 256 fragments of 240 bytes each.

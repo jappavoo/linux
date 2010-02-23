@@ -31,12 +31,14 @@
 #include <linux/cpu.h>
 #include <linux/notifier.h>
 #include <linux/topology.h>
+#include <linux/mm.h>
 
 #include <asm/ptrace.h>
 #include <asm/atomic.h>
 #include <asm/irq.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
+#include <asm/tlb.h>
 #include <asm/prom.h>
 #include <asm/smp.h>
 #include <asm/time.h>
@@ -214,9 +216,6 @@ int smp_call_function_map(void (*func) (void *info), void *info, int nonatomic,
 	spin_lock(&call_lock);
 	/* Must grab online cpu count with preempt disabled, otherwise
 	 * it can change. */
-	num_cpus = num_online_cpus() - 1;
-	if (!num_cpus)
-		goto done;
 
 	/* remove 'self' from the map */
 	if (cpu_isset(smp_processor_id(), map))
@@ -224,7 +223,9 @@ int smp_call_function_map(void (*func) (void *info), void *info, int nonatomic,
 
 	/* sanity check the map, remove any non-online processors. */
 	cpus_and(map, map, cpu_online_map);
-	if (cpus_empty(map))
+	num_cpus = cpus_weight(map);
+
+	if (!num_cpus)
 		goto done;
 
 	call_data = &data;
@@ -609,3 +610,66 @@ void __cpu_die(unsigned int cpu)
 		smp_ops->cpu_die(cpu);
 }
 #endif
+
+
+#ifdef CONFIG_TLBIE_LOCAL_ONLY
+struct tlb_flush_param {
+	struct mm_struct *mm;
+	unsigned long va;
+};
+
+static void do_flush_tlb_mm(void * info)
+{
+	struct tlb_flush_param *p = info;
+
+	local_flush_tlb_mm(p->mm);
+
+	/* If the active mm is different than the flush_mm we mark the
+	 * mm as unused on this CPU to reduce unnecessary remote TLB
+	 * invalidations (e.g., if a task was moved to another
+	 * processor).  However, NEVER clear the init_mm, otherwise
+	 * in-kernel shoot-downs stop working. */
+	if ((p->mm != current->active_mm) && (p->mm != &init_mm))
+		cpu_clear(get_cpu(), p->mm->cpu_vm_mask);
+
+	put_cpu_no_resched();
+}
+
+void smp_flush_tlb_mm(struct mm_struct *mm)
+{
+	cpumask_t cpu_mask;
+	preempt_disable();
+	cpu_mask = mm->cpu_vm_mask;
+	cpu_clear(smp_processor_id(), cpu_mask);
+	local_flush_tlb_mm(mm);
+	if (!cpus_empty(cpu_mask)) {
+		struct tlb_flush_param param = { .mm = mm };
+		wmb();
+		smp_call_function_map(do_flush_tlb_mm, &param, 1, 1, cpu_mask);
+	}
+	preempt_enable();
+}
+
+static void do_flush_tlb_page(void *info)
+{
+	struct tlb_flush_param *p = info;
+	local_flush_tlb_page(p->mm, p->va);
+	put_cpu_no_resched();
+}
+
+void smp_flush_tlb_page(struct mm_struct *mm, unsigned long va)
+{
+	cpumask_t cpu_mask;
+
+	preempt_disable();
+	cpu_mask = mm->cpu_vm_mask;
+	cpu_clear(smp_processor_id(), cpu_mask);
+	local_flush_tlb_page(mm, va);
+	if (!cpus_empty(cpu_mask)) {
+		struct tlb_flush_param param = { .mm = mm, .va = va };
+		wmb();
+		smp_call_function_map(do_flush_tlb_page, &param, 1, 1, cpu_mask);
+	}
+	preempt_enable();
+}
+#endif /* CONFIG_TLBIE_LOCAL_ONLY */

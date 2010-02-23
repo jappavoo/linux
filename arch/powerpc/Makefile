@@ -67,7 +67,7 @@ LDFLAGS_vmlinux	:= -Bstatic
 CPPFLAGS-$(CONFIG_PPC32) := -Iarch/$(ARCH) -Iarch/$(ARCH)/include
 AFLAGS-$(CONFIG_PPC32)	:= -Iarch/$(ARCH)
 CFLAGS-$(CONFIG_PPC64)	:= -mminimal-toc -mtraceback=none  -mcall-aixdesc
-CFLAGS-$(CONFIG_PPC32)	:= -Iarch/$(ARCH) -ffixed-r2 -mmultiple
+CFLAGS-$(CONFIG_PPC32)	:= -Iarch/$(ARCH) -ffixed-r2 -mmultiple -g
 CPPFLAGS	+= $(CPPFLAGS-y)
 AFLAGS		+= $(AFLAGS-y)
 CFLAGS		+= -msoft-float -pipe $(CFLAGS-y)
@@ -111,7 +111,10 @@ ifeq ($(CONFIG_6xx),y)
 CFLAGS		+= -mcpu=powerpc
 endif
 
+cpu-as-$(CONFIG_44x)		+= -Wa,-m440
+ifneq ($(CONFIG_44x),y)
 cpu-as-$(CONFIG_4xx)		+= -Wa,-m405
+endif
 cpu-as-$(CONFIG_6xx)		+= -Wa,-maltivec
 cpu-as-$(CONFIG_POWER4)		+= -Wa,-maltivec
 cpu-as-$(CONFIG_E500)		+= -Wa,-me500

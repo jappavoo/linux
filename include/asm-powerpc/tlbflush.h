@@ -29,7 +29,11 @@ struct vm_area_struct;
  * specific tlbie's
  */
 
+#ifdef CONFIG_4xx
+extern void _tlbie(unsigned long address, unsigned int pid);
+#else
 extern void _tlbie(unsigned long address);
+#endif
 
 #if defined(CONFIG_40x) || defined(CONFIG_8xx)
 #define _tlbia()	asm volatile ("tlbia; sync" : : : "memory")
@@ -37,33 +41,68 @@ extern void _tlbie(unsigned long address);
 extern void _tlbia(void);
 #endif
 
-static inline void flush_tlb_mm(struct mm_struct *mm)
+static inline void local_flush_tlb_mm(struct mm_struct *mm)
 {
 	_tlbia();
+}
+
+static inline void local_flush_tlb_page(struct mm_struct *mm,
+					unsigned long vmaddr)
+{
+#ifdef CONFIG_4xx
+	_tlbie(vmaddr, mm->context.id);
+#else
+	_tlbie(vmaddr);
+#endif
+}
+
+#if defined(CONFIG_TLBIE_LOCAL_ONLY) && defined(CONFIG_SMP)
+/* XXX: use batching similar to PPC64 */
+extern void smp_flush_tlb_mm(struct mm_struct *mm);
+extern void smp_flush_tlb_page(struct mm_struct *mm, unsigned long addr);
+#define __flush_tlb_mm		smp_flush_tlb_mm
+#define __flush_tlb_page	smp_flush_tlb_page
+#else
+#define __flush_tlb_mm		local_flush_tlb_mm
+#define __flush_tlb_page	local_flush_tlb_page
+#endif
+
+static inline void flush_tlb_mm(struct mm_struct *mm)
+{
+	__flush_tlb_mm(mm);
 }
 
 static inline void flush_tlb_page(struct vm_area_struct *vma,
 				  unsigned long vmaddr)
 {
-	_tlbie(vmaddr);
+#ifdef CONFIG_HIGHMEM
+	if (unlikely(!vma)) /* high-mem case */
+		local_flush_tlb_page(&init_mm, vmaddr);
+	else
+#endif
+		__flush_tlb_page(vma->vm_mm, vmaddr);
 }
 
 static inline void flush_tlb_page_nohash(struct vm_area_struct *vma,
 					 unsigned long vmaddr)
 {
-	_tlbie(vmaddr);
+	__flush_tlb_page(vma->vm_mm, vmaddr);
 }
 
 static inline void flush_tlb_range(struct vm_area_struct *vma,
 				   unsigned long start, unsigned long end)
 {
-	_tlbia();
+	__flush_tlb_mm(vma->vm_mm);
 }
 
 static inline void flush_tlb_kernel_range(unsigned long start,
 					  unsigned long end)
 {
-	_tlbia();
+	__flush_tlb_mm(&init_mm);
+}
+
+static inline void hash_page_sync(void)
+{
 }
 
 #elif defined(CONFIG_PPC32)

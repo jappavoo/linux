@@ -109,12 +109,25 @@ config TAISHAN
 	help
 	  This option enables support for the AMCC PPC440GX evaluation board.
 
+config BGP
+	bool "Blue Gene/P"
+	select BLUEGENE
+	help
+	  This option enables support for the IBM Blue Gene/P supercomputer.
+
 endchoice
 
 config EP405PC
 	bool "EP405PC Support"
 	depends on EP405
 
+config BLUEGENE
+	bool
+
+config L1_WRITETHROUGH
+	bool "Blue Gene enable writethrough mode"
+	depends on BLUEGENE
+	default n
 
 # It's often necessary to know the specific 4xx processor type.
 # Fortunately, it is impled (so far) from the board type, so we

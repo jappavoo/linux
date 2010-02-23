@@ -585,14 +585,16 @@ extern void add_hash_page(unsigned context, unsigned long va,
 /*
  * Atomic PTE updates.
  *
- * pte_update clears and sets bit atomically, and returns
- * the old pte value.  In the 64-bit PTE case we lock around the
- * low PTE word since we expect ALL flag bits to be there
+ * pte_update clears and sets PTE bits. This is done atomically on hash
+ * table processors and non-atomically on others where we should have
+ * appropriate locking provided by the caller.
+ * It also returns the old pte value.
+ * In the 64-bit PTE case we only manipulate (and return) the low bits
  */
-#ifndef CONFIG_PTE_64BIT
 static inline unsigned long pte_update(pte_t *p, unsigned long clr,
 				       unsigned long set)
 {
+#if _PAGE_HASHPTE != 0
 	unsigned long old, tmp;
 
 	__asm__ __volatile__("\
@@ -606,28 +608,16 @@ static inline unsigned long pte_update(pte_t *p, unsigned long clr,
 	: "r" (p), "r" (clr), "r" (set), "m" (*p)
 	: "cc" );
 	return old;
-}
-#else
-static inline unsigned long long pte_update(pte_t *p, unsigned long clr,
-				       unsigned long set)
-{
-	unsigned long long old;
-	unsigned long tmp;
-
-	__asm__ __volatile__("\
-1:	lwarx	%L0,0,%4\n\
-	lwzx	%0,0,%3\n\
-	andc	%1,%L0,%5\n\
-	or	%1,%1,%6\n"
-	PPC405_ERR77(0,%3)
-"	stwcx.	%1,0,%4\n\
-	bne-	1b"
-	: "=&r" (old), "=&r" (tmp), "=m" (*p)
-	: "r" (p), "r" ((unsigned long)(p) + 4), "r" (clr), "r" (set), "m" (*p)
-	: "cc" );
-	return old;
-}
+#else /* _PAGE_HASHPTE != 0 */
+	unsigned long old, *wp = (unsigned long *)p;
+#ifdef CONFIG_PTE_64BIT
+	wp++;
 #endif
+	old = *wp;
+	*wp = (old &~ clr) | set;
+	return old;
+#endif /* _PAGE_HASHPTE == 0 */
+}
 
 /*
  * set_pte stores a linux PTE into the linux page table.
@@ -639,6 +629,17 @@ static inline void set_pte_at(struct mm_struct *mm, unsigned long addr,
 {
 #if _PAGE_HASHPTE != 0
 	pte_update(ptep, ~_PAGE_HASHPTE, pte_val(pte) & ~_PAGE_HASHPTE);
+#elif defined(CONFIG_PTE_64BIT)
+	unsigned long *dst = (unsigned long *)ptep;
+
+	if (pte_present(*ptep)) {
+		dst[1] = 0;
+		eieio();
+	}
+	dst[0] = pte_val(pte) >> 32;
+	eieio();
+	dst[1] = pte_val(pte) & 0xfffffffful;
+	eieio();
 #else
 	*ptep = pte;
 #endif

@@ -123,27 +123,48 @@ void register_irq_proc(unsigned int irq)
 	irq_desc[irq].dir = proc_mkdir(name, root_irq_dir);
 
 #ifdef CONFIG_SMP
-	{
-		struct proc_dir_entry *entry;
+	if (!irq_desc[irq].dir || irq_desc[irq].affinity_entry)
+		return;
 
-		/* create /proc/irq/<irq>/smp_affinity */
-		entry = create_proc_entry("smp_affinity", 0600, irq_desc[irq].dir);
+	/* create /proc/irq/<irq>/smp_affinity */
+	irq_desc[irq].affinity_entry =
+		create_proc_entry("smp_affinity", 0600, irq_desc[irq].dir);
 
-		if (entry) {
-			entry->data = (void *)(long)irq;
-			entry->read_proc = irq_affinity_read_proc;
-			entry->write_proc = irq_affinity_write_proc;
-		}
+	if (irq_desc[irq].affinity_entry) {
+		irq_desc[irq].affinity_entry->data = (void *)(long)irq;
+		irq_desc[irq].affinity_entry->read_proc =
+			irq_affinity_read_proc;
+		irq_desc[irq].affinity_entry->write_proc =
+			irq_affinity_write_proc;
 	}
 #endif
 }
 
 #undef MAX_NAMELEN
 
+void unregister_irq_proc(unsigned int irq)
+{
+	if (irq_desc[irq].dir) {
+#ifdef CONFIG_SMP
+		if (irq_desc[irq].affinity_entry) {
+			remove_proc_entry(irq_desc[irq].affinity_entry->name,
+					  irq_desc[irq].dir);
+			irq_desc[irq].affinity_entry = NULL;
+		}
+#endif
+		BUG_ON(!root_irq_dir);
+		remove_proc_entry(irq_desc[irq].dir->name, root_irq_dir);
+		irq_desc[irq].dir = NULL;
+	}
+}
+
 void unregister_handler_proc(unsigned int irq, struct irqaction *action)
 {
-	if (action->dir)
+	if (action->dir) {
+		BUG_ON(!irq_desc[irq].dir);
 		remove_proc_entry(action->dir->name, irq_desc[irq].dir);
+		action->dir = NULL;
+	}
 }
 
 void init_irq_proc(void)

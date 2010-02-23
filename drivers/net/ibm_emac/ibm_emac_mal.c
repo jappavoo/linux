@@ -33,6 +33,7 @@
 #include "ibm_emac_mal.h"
 #include "ibm_emac_debug.h"
 
+// XEMAC OK
 int __init mal_register_commac(struct ibm_ocp_mal *mal,
 			       struct mal_commac *commac)
 {
@@ -59,6 +60,7 @@ int __init mal_register_commac(struct ibm_ocp_mal *mal,
 	return 0;
 }
 
+// XEMAC OK
 void mal_unregister_commac(struct ibm_ocp_mal *mal, struct mal_commac *commac)
 {
 	unsigned long flags;
@@ -93,6 +95,7 @@ int mal_set_rcbs(struct ibm_ocp_mal *mal, int channel, unsigned long size)
 	return 0;
 }
 
+// XEMAC OK
 int mal_tx_bd_offset(struct ibm_ocp_mal *mal, int channel)
 {
 	struct ocp_func_mal_data *maldata = mal->def->additions;
@@ -100,6 +103,7 @@ int mal_tx_bd_offset(struct ibm_ocp_mal *mal, int channel)
 	return channel * NUM_TX_BUFF;
 }
 
+// XEMAC OK
 int mal_rx_bd_offset(struct ibm_ocp_mal *mal, int channel)
 {
 	struct ocp_func_mal_data *maldata = mal->def->additions;
@@ -107,36 +111,62 @@ int mal_rx_bd_offset(struct ibm_ocp_mal *mal, int channel)
 	return maldata->num_tx_chans * NUM_TX_BUFF + channel * NUM_RX_BUFF;
 }
 
+// XEMAC OK
 void mal_enable_tx_channel(struct ibm_ocp_mal *mal, int channel)
 {
 	local_bh_disable();
 	MAL_DBG("%d: enable_tx(%d)" NL, mal->def->index, channel);
+#ifdef CONFIG_EMAC_TOMAL
+	set_mal_dcrn(mal, MAL_CFG,
+		     get_mal_dcrn(mal, MAL_CFG) | TOMAL_CFG_TX_MAC(channel));
+#else
 	set_mal_dcrn(mal, MAL_TXCASR,
 		     get_mal_dcrn(mal, MAL_TXCASR) | MAL_CHAN_MASK(channel));
+#endif
 	local_bh_enable();
 }
 
+// XEMAC OK
 void mal_disable_tx_channel(struct ibm_ocp_mal *mal, int channel)
 {
+#ifdef CONFIG_EMAC_TOMAL
+	set_mal_dcrn(mal, MAL_CFG,
+		     get_mal_dcrn(mal, MAL_CFG) & ~TOMAL_CFG_TX_MAC(channel));
+#else
 	set_mal_dcrn(mal, MAL_TXCARR, MAL_CHAN_MASK(channel));
+#endif
 	MAL_DBG("%d: disable_tx(%d)" NL, mal->def->index, channel);
 }
 
+// XEMAC OK
 void mal_enable_rx_channel(struct ibm_ocp_mal *mal, int channel)
 {
 	local_bh_disable();
 	MAL_DBG("%d: enable_rx(%d)" NL, mal->def->index, channel);
+#ifdef CONFIG_EMAC_TOMAL
+	set_mal_dcrn(mal, MAL_CFG,
+		     get_mal_dcrn(mal, MAL_CFG) | TOMAL_CFG_RX_MAC(channel));
+#else
 	set_mal_dcrn(mal, MAL_RXCASR,
 		     get_mal_dcrn(mal, MAL_RXCASR) | MAL_CHAN_MASK(channel));
+#endif
 	local_bh_enable();
 }
 
+// XEMAC OK
 void mal_disable_rx_channel(struct ibm_ocp_mal *mal, int channel)
 {
+#ifdef CONFIG_EMAC_TOMAL
+	set_mal_dcrn(mal, MAL_CFG,
+		     get_mal_dcrn(mal, MAL_CFG) & ~TOMAL_CFG_RX_MAC(channel));
+
+#else
 	set_mal_dcrn(mal, MAL_RXCARR, MAL_CHAN_MASK(channel));
+#endif
 	MAL_DBG("%d: disable_rx(%d)" NL, mal->def->index, channel);
 }
 
+// XEMAC OK
 void mal_poll_add(struct ibm_ocp_mal *mal, struct mal_commac *commac)
 {
 	local_bh_disable();
@@ -145,6 +175,7 @@ void mal_poll_add(struct ibm_ocp_mal *mal, struct mal_commac *commac)
 	local_bh_enable();
 }
 
+// XEMAC OK
 void mal_poll_del(struct ibm_ocp_mal *mal, struct mal_commac *commac)
 {
 	local_bh_disable();
@@ -205,6 +236,7 @@ static irqreturn_t mal_serr(int irq, void *dev_instance)
 	return IRQ_HANDLED;
 }
 
+// XEMAC OK
 static inline void mal_schedule_poll(struct ibm_ocp_mal *mal)
 {
 	if (likely(netif_rx_schedule_prep(&mal->poll_dev))) {
@@ -273,6 +305,7 @@ static irqreturn_t mal_rxde(int irq, void *dev_instance)
 	return IRQ_HANDLED;
 }
 
+// XEMAC OK
 static int mal_poll(struct net_device *ndev, int *budget)
 {
 	struct ibm_ocp_mal *mal = ndev->priv;
@@ -358,6 +391,7 @@ static void mal_reset(struct ibm_ocp_mal *mal)
 		printk(KERN_ERR "mal%d: reset timeout\n", mal->def->index);
 }
 
+// XEMAC OK
 int mal_get_regs_len(struct ibm_ocp_mal *mal)
 {
 	return sizeof(struct emac_ethtool_regs_subhdr) +
@@ -513,6 +547,7 @@ static int __init mal_probe(struct ocp_device *ocpdev)
 	return err;
 }
 
+// XEMAC OK
 static void __exit mal_remove(struct ocp_device *ocpdev)
 {
 	struct ibm_ocp_mal *mal = ocp_get_drvdata(ocpdev);
@@ -568,12 +603,14 @@ static struct ocp_driver mal_driver = {
 	.remove = mal_remove,
 };
 
+// XEMAC OK
 int __init mal_init(void)
 {
 	MAL_DBG(": init" NL);
 	return ocp_register_driver(&mal_driver);
 }
 
+// XEMAC OK
 void __exit mal_exit(void)
 {
 	MAL_DBG(": exit" NL);

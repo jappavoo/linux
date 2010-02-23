@@ -1281,7 +1281,7 @@ static int __init ip_auto_config(void)
 	 */
 	if (ic_myaddr == NONE ||
 #ifdef CONFIG_ROOT_NFS
-	    (MAJOR(ROOT_DEV) == UNNAMED_MAJOR
+	    (ROOT_DEV == Root_NFS
 	     && root_server_addr == NONE
 	     && ic_servaddr == NONE) ||
 #endif

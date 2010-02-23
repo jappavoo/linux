@@ -234,12 +234,19 @@ _GLOBAL(_tlbie)
 	isync
 10:
 #elif defined(CONFIG_44x)
-	mfspr	r4,SPRN_MMUCR
-	mfspr	r5,SPRN_PID			/* Get PID */
-	rlwimi	r4,r5,0,24,31			/* Set TID */
-	mtspr	SPRN_MMUCR,r4
+	mfspr	r5,SPRN_MMUCR
+#if 0
+	mfspr	r4,SPRN_PID			/* Get PID */
+#endif
+	rlwimi	r5,r4,0,24,31			/* Set TID */
 
+	/* The invalidate code must be run with interrupts disabled to avoid
+	 * interleaving with tlb mainpulations due to interrupts */
+	mfmsr   r6
+	wrteei  0
+	mtspr	SPRN_MMUCR,r5
 	tlbsx.	r3, 0, r3
+
 	bne	10f
 	sync
 	/* There are only 64 TLB entries, so r3 < 64,
@@ -249,7 +256,7 @@ _GLOBAL(_tlbie)
 	 */
 	tlbwe	r3, r3, PPC44x_TLB_PAGEID
 	isync
-10:
+10:     mtmsr   r6
 #elif defined(CONFIG_FSL_BOOKE)
 	rlwinm	r4, r3, 0, 0, 19
 	ori	r5, r4, 0x08	/* TLBSEL = 1 */
@@ -533,12 +540,18 @@ _GLOBAL(clear_pages)
 	li	r0,4096/L1_CACHE_BYTES
 	slw	r0,r0,r4
 	mtctr	r0
-#ifdef CONFIG_8xx
+#if defined(CONFIG_8xx) || defined(CONFIG_L1_WRITETHROUGH)
 	li	r4, 0
 1:	stw	r4, 0(r3)
 	stw	r4, 4(r3)
 	stw	r4, 8(r3)
 	stw	r4, 12(r3)
+#if L1_CACHE_BYTES >= 32
+	stw	r4, 16(r3)
+	stw	r4, 20(r3)
+	stw	r4, 24(r3)
+	stw	r4, 28(r3)
+#endif
 #else
 1:	dcbz	0,r3
 #endif
@@ -594,7 +607,9 @@ _GLOBAL(copy_page)
 	mtctr	r0
 1:
 	dcbt	r11,r4
+#ifndef CONFIG_L1_WRITETHROUGH
 	dcbz	r5,r3
+#endif
 	COPY_16_BYTES
 #if L1_CACHE_BYTES >= 32
 	COPY_16_BYTES

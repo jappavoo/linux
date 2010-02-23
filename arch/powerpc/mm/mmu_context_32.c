@@ -32,8 +32,10 @@
 unsigned long next_mmu_context;
 unsigned long context_map[LAST_CONTEXT / BITS_PER_LONG + 1];
 #ifdef FEW_CONTEXTS
+spinlock_t context_lock;
 atomic_t nr_free_contexts;
 struct mm_struct *context_mm[LAST_CONTEXT+1];
+DEFINE_PER_CPU(unsigned long, current_context);
 void steal_context(void);
 #endif /* FEW_CONTEXTS */
 
@@ -59,9 +61,10 @@ mmu_context_init(void)
 #ifdef FEW_CONTEXTS
 /*
  * Steal a context from a task that has one at the moment.
- * This is only used on 8xx and 4xx and we presently assume that
- * they don't do SMP.  If they do then this will have to check
- * whether the MM we steal is in use.
+ * We assume that the system has less processors than MMU contexts so
+ * that we are guaranteed to find an unused context.  In the worst
+ * case we need online-CPUs - 1 tests; not scaling but ok for small
+ * numbers of CPUs.
  * We also assume that this is only used on systems that don't
  * use an MMU hash table - this is true for 8xx and 4xx.
  * This isn't an LRU system, it just frees up each context in
@@ -73,13 +76,30 @@ void
 steal_context(void)
 {
 	struct mm_struct *mm;
+	int found, cpu;
 
 	/* free up context `next_mmu_context' */
 	/* if we shouldn't free context 0, don't... */
-	if (next_mmu_context < FIRST_CONTEXT)
-		next_mmu_context = FIRST_CONTEXT;
+	do {
+		if (next_mmu_context < FIRST_CONTEXT)
+			next_mmu_context = FIRST_CONTEXT;
+
+		found = 1;
+
+		for_each_online_cpu(cpu)
+			if (per_cpu(current_context, cpu) == next_mmu_context) {
+				next_mmu_context++;
+				next_mmu_context &= LAST_CONTEXT;
+				found = 0;
+				break;
+			}
+	} while (!found);
+
 	mm = context_mm[next_mmu_context];
 	flush_tlb_mm(mm);
 	destroy_context(mm);
+
+	/* some book-keeping to reduce remote flushes */
+	cpus_clear(mm->cpu_vm_mask);
 }
 #endif /* FEW_CONTEXTS */

@@ -165,6 +165,9 @@ struct irq_desc {
 #ifdef CONFIG_SMP
 	cpumask_t		affinity;
 	unsigned int		cpu;
+#ifdef CONFIG_PROC_FS
+	struct proc_dir_entry	*affinity_entry;
+#endif
 #endif
 #if defined(CONFIG_GENERIC_PENDING_IRQ) || defined(CONFIG_IRQBALANCE)
 	cpumask_t		pending_mask;

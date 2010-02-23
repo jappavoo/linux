@@ -852,9 +852,16 @@ void __init generic_calibrate_decr(void)
 	}
 
 #ifdef CONFIG_BOOKE
+
+#ifndef CONFIG_BGP
 	/* Set the time base to zero */
 	mtspr(SPRN_TBWL, 0);
 	mtspr(SPRN_TBWU, 0);
+#else
+	/* On bluegene, we want to preserve the synchronized timebases we
+	 * inherit at block-boot time, so don't clear anything.
+	 */
+#endif
 
 	/* Clear any pending timer interrupts */
 	mtspr(SPRN_TSR, TSR_ENW | TSR_WIS | TSR_DIS | TSR_FIS);

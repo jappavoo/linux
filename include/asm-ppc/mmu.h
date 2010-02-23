@@ -323,6 +323,9 @@ typedef struct _P601_BAT {
  */
 #define PPC44x_MMUCR_TID	0x000000ff
 #define PPC44x_MMUCR_STS	0x00010000
+#define PPC44x_MMUCR_U2SWOAE    0x00200000
+#define PPC44x_MMUCR_U1TE       0x00400000
+#define PPC44x_MMUCR_SWOA       0x01000000
 
 #define	PPC44x_TLB_PAGEID	0
 #define	PPC44x_TLB_XLAT		1
@@ -346,7 +349,12 @@ typedef struct _P601_BAT {
 #define	PPC44x_TLB_ERPN_MASK	0x0000000f
 
 /* Storage attribute and access control fields */
-#define PPC44x_TLB_ATTR_MASK	0x0000ff80
+#define PPC44x_TLB_ATTR_MASK	0x001fff80
+#define PPC44x_TLB_WL1          0x00100000	/* Write-through L1 */
+#define PPC44x_TLB_IL1I         0x00080000	/* Inhibit L1 icache */
+#define PPC44x_TLB_IL1D         0x00040000	/* Inhibit L1 dcache */
+#define PPC44x_TLB_IL2I         0x00020000	/* Inhibit L2 icache */
+#define PPC44x_TLB_IL2D         0x00010000	/* Inhibit L2 dcache */
 #define PPC44x_TLB_U0		0x00008000      /* User 0 */
 #define PPC44x_TLB_U1		0x00004000      /* User 1 */
 #define PPC44x_TLB_U2		0x00002000      /* User 2 */

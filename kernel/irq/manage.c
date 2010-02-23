@@ -282,6 +282,11 @@ int setup_irq(unsigned int irq, struct irqaction *new)
 		rand_initialize_irq(irq);
 	}
 
+	new->irq = irq;
+	register_irq_proc(irq);
+	new->dir = NULL;
+	register_handler_proc(irq, new);
+
 	/*
 	 * The following block of code has to be executed atomically
 	 */
@@ -366,11 +371,6 @@ int setup_irq(unsigned int irq, struct irqaction *new)
 	desc->irqs_unhandled = 0;
 	spin_unlock_irqrestore(&desc->lock, flags);
 
-	new->irq = irq;
-	register_irq_proc(irq);
-	new->dir = NULL;
-	register_handler_proc(irq, new);
-
 	return 0;
 
 mismatch:
@@ -383,6 +383,8 @@ mismatch:
 	}
 #endif
 	spin_unlock_irqrestore(&desc->lock, flags);
+	unregister_handler_proc(irq, new);
+	unregister_irq_proc(irq);
 	return -EBUSY;
 }
 
@@ -442,6 +444,7 @@ void free_irq(unsigned int irq, void *dev_id)
 			}
 			spin_unlock_irqrestore(&desc->lock, flags);
 			unregister_handler_proc(irq, action);
+			unregister_irq_proc(irq);
 
 			/* Make sure it's not being used on another CPU */
 			synchronize_irq(irq);

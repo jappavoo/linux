@@ -60,6 +60,7 @@ _GLOBAL(_start)
 	 * of abatron_pteptrs
 	 */
 	nop
+	dccci 0, 0
 /*
  * Save parameters we are passed
  */
@@ -135,6 +136,9 @@ skpinv:	addi	r4,r4,1				/* Increment */
 
 	/* Initialize MMUCR */
 	li	r5,0
+#ifdef CONFIG_L1_WRITETHROUGH
+	oris	r5,r5,PPC44x_MMUCR_U2SWOAE@h
+#endif
 	mtspr	SPRN_MMUCR,r5
 	sync
 
@@ -148,8 +152,14 @@ skpinv:	addi	r4,r4,1				/* Increment */
 
 	/* attrib fields */
 	/* Added guarded bit to protect against speculative loads/stores */
+#ifndef CONFIG_L1_WRITETHROUGH
 	li	r5,0
 	ori	r5,r5,(PPC44x_TLB_SW | PPC44x_TLB_SR | PPC44x_TLB_SX | PPC44x_TLB_G)
+#else
+	lis	r5, PPC44x_TLB_WL1@h
+	ori	r5,r5,(PPC44x_TLB_SW | PPC44x_TLB_SR | PPC44x_TLB_SX | PPC44x_TLB_M | PPC44x_TLB_U2)
+#endif
+
 
         li      r0,63                    /* TLB slot 63 */
 
@@ -237,6 +247,15 @@ skpinv:	addi	r4,r4,1				/* Increment */
 	isync
 #endif
 
+#ifdef CONFIG_SMP
+	li	r0, 0
+	mfspr	r4, SPRN_PIR
+	cmpw	r4, r0
+
+	/* loop for the time being */
+1:	bgt	1b
+#endif
+
 	/*
 	 * This is where the main kernel code starts.
 	 */
@@ -317,111 +336,16 @@ interrupt_base:
 
 	/* Data Storage Interrupt */
 	START_EXCEPTION(DataStorage)
-	mtspr	SPRN_SPRG0, r10		/* Save some working registers */
-	mtspr	SPRN_SPRG1, r11
-	mtspr	SPRN_SPRG4W, r12
-	mtspr	SPRN_SPRG5W, r13
-	mfcr	r11
-	mtspr	SPRN_SPRG7W, r11
-
 	/*
-	 * Check if it was a store fault, if not then bail
-	 * because a user tried to access a kernel or
-	 * read-protected page.  Otherwise, get the
-	 * offending address and handle it.
+	 * Data TLB exceptions will bail out to this point
+	 * if they can't resolve the lightweight TLB fault.
 	 */
-	mfspr	r10, SPRN_ESR
-	andis.	r10, r10, ESR_ST@h
-	beq	2f
-
-	mfspr	r10, SPRN_DEAR		/* Get faulting address */
-
-	/* If we are faulting a kernel address, we have to use the
-	 * kernel page tables.
-	 */
-	lis	r11, TASK_SIZE@h
-	cmplw	r10, r11
-	blt+	3f
-	lis	r11, swapper_pg_dir@h
-	ori	r11, r11, swapper_pg_dir@l
-
-	mfspr   r12,SPRN_MMUCR
-	rlwinm	r12,r12,0,0,23		/* Clear TID */
-
-	b	4f
-
-	/* Get the PGD for the current thread */
-3:
-	mfspr	r11,SPRN_SPRG3
-	lwz	r11,PGDIR(r11)
-
-	/* Load PID into MMUCR TID */
-	mfspr	r12,SPRN_MMUCR		/* Get MMUCR */
-	mfspr   r13,SPRN_PID		/* Get PID */
-	rlwimi	r12,r13,0,24,31		/* Set TID */
-
-4:
-	mtspr   SPRN_MMUCR,r12
-
-	rlwinm  r12, r10, 13, 19, 29    /* Compute pgdir/pmd offset */
-	lwzx    r11, r12, r11           /* Get pgd/pmd entry */
-	rlwinm. r12, r11, 0, 0, 20      /* Extract pt base address */
-	beq     2f                      /* Bail if no table */
-
-	rlwimi  r12, r10, 23, 20, 28    /* Compute pte address */
-	lwz     r11, 4(r12)             /* Get pte entry */
-
-	andi.	r13, r11, _PAGE_RW	/* Is it writeable? */
-	beq	2f			/* Bail if not */
-
-	/* Update 'changed'.
-	*/
-	ori	r11, r11, _PAGE_DIRTY|_PAGE_ACCESSED|_PAGE_HWWRITE
-	stw	r11, 4(r12)		/* Update Linux page table */
-
-	li	r13, PPC44x_TLB_SR@l	/* Set SR */
-	rlwimi	r13, r11, 29, 29, 29	/* SX = _PAGE_HWEXEC */
-	rlwimi	r13, r11, 0, 30, 30	/* SW = _PAGE_RW */
-	rlwimi	r13, r11, 29, 28, 28	/* UR = _PAGE_USER */
-	rlwimi	r12, r11, 31, 26, 26	/* (_PAGE_USER>>1)->r12 */
-	rlwimi	r12, r11, 29, 30, 30	/* (_PAGE_USER>>3)->r12 */
-	and	r12, r12, r11		/* HWEXEC/RW & USER */
-	rlwimi	r13, r12, 0, 26, 26	/* UX = HWEXEC & USER */
-	rlwimi	r13, r12, 3, 27, 27	/* UW = RW & USER */
-
-	rlwimi	r11,r13,0,26,31		/* Insert static perms */
-
-	rlwinm	r11,r11,0,20,15		/* Clear U0-U3 */
-
-	/* find the TLB index that caused the fault.  It has to be here. */
-	tlbsx	r10, 0, r10
-
-	tlbwe	r11, r10, PPC44x_TLB_ATTRIB	/* Write ATTRIB */
-
-	/* Done...restore registers and get out of here.
-	*/
-	mfspr	r11, SPRN_SPRG7R
-	mtcr	r11
-	mfspr	r13, SPRN_SPRG5R
-	mfspr	r12, SPRN_SPRG4R
-
-	mfspr	r11, SPRN_SPRG1
-	mfspr	r10, SPRN_SPRG0
-	rfi			/* Force context change */
-
-2:
-	/*
-	 * The bailout.  Restore registers to pre-exception conditions
-	 * and call the heavyweights to help us out.
-	 */
-	mfspr	r11, SPRN_SPRG7R
-	mtcr	r11
-	mfspr	r13, SPRN_SPRG5R
-	mfspr	r12, SPRN_SPRG4R
-
-	mfspr	r11, SPRN_SPRG1
-	mfspr	r10, SPRN_SPRG0
-	b	data_access
+data_access:
+	NORMAL_EXCEPTION_PROLOG
+	mfspr	r5,SPRN_ESR		/* Grab the ESR, save it, pass arg3 */
+	stw	r5,_ESR(r11)
+	mfspr	r4,SPRN_DEAR		/* Grab the DEAR, save it, pass arg2 */
+	EXC_XFER_EE_LITE(0x0300, handle_page_fault)
 
 	/* Instruction Storage Interrupt */
 	INSTRUCTION_STORAGE_EXCEPTION
@@ -508,12 +432,10 @@ interrupt_base:
 	beq	2f			/* Bail if no table */
 
 	rlwimi	r12, r10, 23, 20, 28	/* Compute pte address */
+	li	r13,_PAGE_PRESENT|_PAGE_ACCESSED
 	lwz	r11, 4(r12)		/* Get pte entry */
-	andi.	r13, r11, _PAGE_PRESENT	/* Is the page present? */
-	beq	2f			/* Bail if not present */
-
-	ori	r11, r11, _PAGE_ACCESSED
-	stw	r11, 4(r12)
+	andc.	r13,r13,r11
+	bne	2f			/* Bail if not present */
 
 	 /* Jump to common tlb load */
 	b	finish_tlb_load
@@ -578,12 +500,10 @@ interrupt_base:
 	beq	2f			/* Bail if no table */
 
 	rlwimi	r12, r10, 23, 20, 28	/* Compute pte address */
+	li	r13,_PAGE_PRESENT|_PAGE_ACCESSED|_PAGE_HWEXEC
 	lwz	r11, 4(r12)		/* Get pte entry */
-	andi.	r13, r11, _PAGE_PRESENT	/* Is the page present? */
-	beq	2f			/* Bail if not present */
-
-	ori	r11, r11, _PAGE_ACCESSED
-	stw	r11, 4(r12)
+	andc.	r13,r13,r11
+	bne	2f			/* Bail if not present */
 
 	/* Jump to common TLB load point */
 	b	finish_tlb_load
@@ -606,16 +526,6 @@ interrupt_base:
 /*
  * Local functions
  */
-	/*
-	 * Data TLB exceptions will bail out to this point
-	 * if they can't resolve the lightweight TLB fault.
-	 */
-data_access:
-	NORMAL_EXCEPTION_PROLOG
-	mfspr	r5,SPRN_ESR		/* Grab the ESR, save it, pass arg3 */
-	stw	r5,_ESR(r11)
-	mfspr	r4,SPRN_DEAR		/* Grab the DEAR, save it, pass arg2 */
-	EXC_XFER_EE_LITE(0x0300, handle_page_fault)
 
 /*
 
@@ -669,14 +579,23 @@ finish_tlb_load:
 
 	li	r10, PPC44x_TLB_SR@l		/* Set SR */
 	rlwimi	r10, r12, 0, 30, 30		/* Set SW = _PAGE_RW */
-	rlwimi	r10, r12, 29, 29, 29		/* SX = _PAGE_HWEXEC */
-	rlwimi	r10, r12, 29, 28, 28		/* UR = _PAGE_USER */
-	rlwimi	r11, r12, 31, 26, 26		/* (_PAGE_USER>>1)->r12 */
-	and	r11, r12, r11			/* HWEXEC & USER */
-	rlwimi	r10, r11, 0, 26, 26		/* UX = HWEXEC & USER */
+	rlwimi	r10, r12, 29, 28, 29		/* SX = _PAGE_HWEXEC, UR = _PAGE_USER */
+	rlwimi	r11, r12, 31, 26, 26		/* (_PAGE_USER>>1)->r11 */
+	rlwimi	r11, r12, 30, 27, 27		/* (_PAGE_USER>>2)->r11 */
+	and	r11, r12, r11			/* HWEXEC & USER and HWWRITE & USER */
+	rlwimi	r10, r11, 0, 26, 27		/* UX = HWEXEC & USER, UW = HWWRITE & USER */
 
-	rlwimi	r12, r10, 0, 26, 31		/* Insert static perms */
-	rlwinm	r12, r12, 0, 20, 15		/* Clear U0-U3 */
+	rlwimi	r12, r10, 0, 26, 31		/* Insert into static perms */
+	rlwinm	r12, r12, 0, 20, 31		/* Clear all caching attributes */
+#ifdef CONFIG_L1_WRITETHROUGH
+        /* If not cache inhibited we turn on the WLI and M bits. */
+        andi.   r10, r12, PPC44x_TLB_I
+	bne     1f
+	oris    r12, r12, PPC44x_TLB_WL1@h
+	ori     r12, r12, PPC44x_TLB_M|PPC44x_TLB_U2
+	rlwinm  r12, r12, 0, 24, 22             /* Clear G */
+1:
+#endif
 	tlbwe	r12, r13, PPC44x_TLB_ATTRIB	/* Write ATTRIB */
 
 	/* Done...restore registers and get out of here.
@@ -734,6 +653,13 @@ _GLOBAL(set_context)
 	mtspr	SPRN_PID,r3
 	isync			/* Force context change */
 	blr
+
+#ifdef CONFIG_SMP
+_GLOBAL(__save_cpu_setup)
+	blr
+_GLOBAL(__restore_cpu_setup)
+	blr
+#endif
 
 /*
  * We put a few things here that have to be page-aligned. This stuff

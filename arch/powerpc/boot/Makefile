@@ -201,6 +201,7 @@ $(obj)/zImage.initrd.holly-elf: vmlinux $(wrapperbits) $(obj)/ramdisk.image.gz
 
 $(obj)/uImage: vmlinux $(wrapperbits)
 	$(call if_changed,wrap,uboot)
+	$(LD) -e0 -Tdata 0x10000000 -b binary -S -o $(obj)/uImage.elf $(obj)/uImage
 
 # CONFIG_DEVICE_TREE will have "" around it, make sure to strip them
 dts = $(if $(shell echo $(CONFIG_DEVICE_TREE) | grep '^/'),\

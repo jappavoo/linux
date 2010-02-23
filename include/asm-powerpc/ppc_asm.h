@@ -83,6 +83,24 @@ END_FTR_SECTION_IFCLR(CPU_FTR_PURR);					\
 #define REST_8GPRS(n, base)	REST_4GPRS(n, base); REST_4GPRS(n+4, base)
 #define REST_10GPRS(n, base)	REST_8GPRS(n, base); REST_2GPRS(n+8, base)
 
+#if 0
+/* Only a patched toolchain will support the stfpdx/lfpdx instructions */
+#define LFPDX(frt,ra,rb)   .long (31<<26)|((frt)<<21)|((ra)<<16)|((rb)<<11)|(462<<1)
+#define STFPDX(frt,ra,rb)  .long (31<<26)|((frt)<<21)|((ra)<<16)|((rb)<<11)|(974<<1)
+#define SAVE_DFPR(n,b,base)       li b,THREAD_FPR0+(16*(n)); STFPDX(n,base,b)
+#define SAVE_2DFPRS(n,b,base)     SAVE_DFPR(n,b,base);   SAVE_DFPR(n+1,b,base)
+#define SAVE_4DFPRS(n,b,base)     SAVE_2DFPRS(n,b,base); SAVE_2DFPRS(n+2,b,base)
+#define SAVE_8DFPRS(n,b,base)     SAVE_4DFPRS(n,b,base); SAVE_4DFPRS(n+4,b,base)
+#define SAVE_16DFPRS(n,b,base)    SAVE_8DFPRS(n,b,base); SAVE_8DFPRS(n+8,b,base)
+#define SAVE_32DFPRS(n,b,base)    SAVE_16DFPRS(n,b,base);SAVE_16DFPRS(n+16,b,base)
+#define REST_DFPR(n,b,base)       li b,THREAD_FPR0+(16*(n)); LFPDX(n,base,b)
+#define REST_2DFPRS(n,b,base)     REST_DFPR(n,b,base);   REST_DFPR(n+1,b,base)
+#define REST_4DFPRS(n,b,base)     REST_2DFPRS(n,b,base); REST_2DFPRS(n+2,b,base)
+#define REST_8DFPRS(n,b,base)     REST_4DFPRS(n,b,base); REST_4DFPRS(n+4,b,base)
+#define REST_16DFPRS(n,b,base)    REST_8DFPRS(n,b,base); REST_8DFPRS(n+8,b,base)
+#define REST_32DFPRS(n,b,base)    REST_16DFPRS(n,b,base);REST_16DFPRS(n+16,b,base)
+#endif
+
 #define SAVE_FPR(n, base)	stfd	n,THREAD_FPR0+8*(n)(base)
 #define SAVE_2FPRS(n, base)	SAVE_FPR(n, base); SAVE_FPR(n+1, base)
 #define SAVE_4FPRS(n, base)	SAVE_2FPRS(n, base); SAVE_2FPRS(n+2, base)

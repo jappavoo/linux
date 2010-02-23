@@ -40,7 +40,11 @@ ifndef CONFIG_FSL_BOOKE
 CFLAGS		+= -mstring
 endif
 
+CFLAGS += -ggdb
+
+ifndef CONFIG_BLUEGENE
 cpu-as-$(CONFIG_4xx)		+= -Wa,-m405
+endif
 cpu-as-$(CONFIG_6xx)		+= -Wa,-maltivec
 cpu-as-$(CONFIG_E500)		+= -Wa,-me500
 cpu-as-$(CONFIG_E200)		+= -Wa,-me200

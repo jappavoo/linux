@@ -1,0 +1,10 @@
+menu "BlueGene device support"
+	depends on BGP
+
+config BGP_NETWORK
+	bool "Blue Gene network support for torus and tree"
+	---help---
+	  Support for the internal Blue Gene networks as first-class
+          Linux devices.
+
+endmenu

@@ -110,22 +110,15 @@ extern unsigned long next_mmu_context;
 #define FEW_CONTEXTS	1
 extern atomic_t nr_free_contexts;
 extern struct mm_struct *context_mm[LAST_CONTEXT+1];
+extern spinlock_t context_lock;
+DECLARE_PER_CPU(unsigned long, current_context);
 extern void steal_context(void);
 #endif
 
-/*
- * Get a new mmu context for the address space described by `mm'.
- */
-static inline void get_mmu_context(struct mm_struct *mm)
+static inline unsigned long get_free_mmu_context(void)
 {
 	unsigned long ctx;
 
-	if (mm->context.id != NO_CONTEXT)
-		return;
-#ifdef FEW_CONTEXTS
-	while (atomic_dec_if_positive(&nr_free_contexts) < 0)
-		steal_context();
-#endif
 	ctx = next_mmu_context;
 	while (test_and_set_bit(ctx, context_map)) {
 		ctx = find_next_zero_bit(context_map, LAST_CONTEXT+1, ctx);
@@ -133,10 +126,30 @@ static inline void get_mmu_context(struct mm_struct *mm)
 			ctx = 0;
 	}
 	next_mmu_context = (ctx + 1) & LAST_CONTEXT;
-	mm->context.id = ctx;
+
+	return ctx;
+}
+
+/*
+ * Get a new mmu context for the address space described by `mm'.
+ */
+static inline void get_mmu_context(struct mm_struct *mm)
+{
 #ifdef FEW_CONTEXTS
-	context_mm[ctx] = mm;
-#endif
+	spin_lock(&context_lock);
+	if (mm->context.id == NO_CONTEXT) {
+		while (atomic_dec_if_positive(&nr_free_contexts) < 0)
+			steal_context();
+		mm->context.id = get_free_mmu_context();
+		context_mm[mm->context.id] = mm;
+	}
+	per_cpu(current_context, smp_processor_id()) = mm->context.id;
+	spin_unlock(&context_lock);
+#else /*  FEW_CONTEXTS */
+	if (mm->context.id == NO_CONTEXT) {
+		mm->context.id = get_free_mmu_context();
+	}
+#endif /*  FEW_CONTEXTS */
 }
 
 /*
@@ -168,6 +181,9 @@ static inline void destroy_context(struct mm_struct *mm)
 static inline void switch_mm(struct mm_struct *prev, struct mm_struct *next,
 			     struct task_struct *tsk)
 {
+        if (!cpu_isset(smp_processor_id(), next->cpu_vm_mask))
+                cpu_set(smp_processor_id(), next->cpu_vm_mask);
+
 #ifdef CONFIG_ALTIVEC
 	if (cpu_has_feature(CPU_FTR_ALTIVEC))
 	asm volatile ("dssall;\n"

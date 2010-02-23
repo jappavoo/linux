@@ -40,6 +40,7 @@ extern void smp_send_tlb_invalidate(int);
 extern void smp_send_xmon_break(int cpu);
 struct pt_regs;
 extern void smp_message_recv(int);
+extern void smp_invalidate_interrupt(void);
 
 extern int __cpu_disable(void);
 extern void __cpu_die(unsigned int cpu);

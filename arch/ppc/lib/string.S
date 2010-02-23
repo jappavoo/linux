@@ -158,7 +158,7 @@ _GLOBAL(cacheable_memzero)
 	bdnz	4b
 3:	mtctr	r9
 	li	r7,4
-#if !defined(CONFIG_8xx)
+#if !defined(CONFIG_8xx) && !defined(CONFIG_L1_WRITETHROUGH)
 10:	dcbz	r7,r6
 #else
 10:	stw	r4, 4(r6)
@@ -260,7 +260,7 @@ _GLOBAL(cacheable_memcpy)
 	mtctr	r0
 	beq	63f
 53:
-#if !defined(CONFIG_8xx)
+#if !defined(CONFIG_8xx) && !defined(CONFIG_L1_WRITETHROUGH)
 	dcbz	r11,r6
 #endif
 	COPY_16_BYTES
@@ -477,7 +477,10 @@ _GLOBAL(__copy_tofrom_user)
 	mtctr	r8
 
 53:	dcbt	r3,r4
-54:	dcbz	r11,r6
+54:
+#ifndef CONFIG_L1_WRITETHROUGH
+	dcbz	r11,r6
+#endif
 	.section __ex_table,"a"
 	.align	2
 	.long	54b,105f

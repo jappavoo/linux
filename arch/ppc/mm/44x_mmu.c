@@ -74,15 +74,19 @@ ppc44x_pin_tlb(int slot, unsigned int virt, unsigned int phys)
 	clrrwi	%2,%2,10\n\
 	ori	%2,%2,%4\n\
 	clrrwi	%1,%1,10\n\
-	li	%0,0\n\
-	ori	%0,%0,%5\n\
+	lis	%0,%5@h\n\
+	ori	%0,%0,%5@l\n\
 	tlbwe	%2,%3,%6\n\
 	tlbwe	%1,%3,%7\n\
 	tlbwe	%0,%3,%8"
 	:
 	: "r" (attrib), "r" (phys), "r" (virt), "r" (slot),
 	  "i" (PPC44x_TLB_VALID | PPC44x_TLB_256M),
+#ifndef CONFIG_L1_WRITETHROUGH
 	  "i" (PPC44x_TLB_SW | PPC44x_TLB_SR | PPC44x_TLB_SX | PPC44x_TLB_G),
+#else
+	  "i" (PPC44x_TLB_SW | PPC44x_TLB_SR | PPC44x_TLB_SX | PPC44x_TLB_M | PPC44x_TLB_WL1 | PPC44x_TLB_U2),
+#endif
 	  "i" (PPC44x_TLB_PAGEID),
 	  "i" (PPC44x_TLB_XLAT),
 	  "i" (PPC44x_TLB_ATTRIB));

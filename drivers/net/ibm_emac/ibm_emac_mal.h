@@ -26,6 +26,7 @@
 #include <asm/io.h>
 #include <asm/dcr.h>
 
+#ifndef CONFIG_EMAC_TOMAL
 /*
  * These MAL "versions" probably aren't the real versions IBM uses for these 
  * MAL cores, I assigned them just to make #ifdefs in this file nicer and 
@@ -135,26 +136,6 @@
 #define MAL_MAX_TX_SIZE		4080
 #define MAL_MAX_RX_SIZE		4080
 
-static inline int mal_rx_size(int len)
-{
-	len = (len + 0xf) & ~0xf;
-	return len > MAL_MAX_RX_SIZE ? MAL_MAX_RX_SIZE : len;
-}
-
-static inline int mal_tx_chunks(int len)
-{
-	return (len + MAL_MAX_TX_SIZE - 1) / MAL_MAX_TX_SIZE;
-}
-
-#define MAL_CHAN_MASK(n)	(0x80000000 >> (n))
-
-/* MAL Buffer Descriptor structure */
-struct mal_descriptor {
-	u16 ctrl;		/* MAL / Commac status control bits */
-	u16 data_len;		/* Max length is 4K-1 (12 bits)     */
-	u32 data_ptr;		/* pointer to actual data buffer    */
-};
-
 /* the following defines are for the MadMAL status and control registers. */
 /* MADMAL transmit and receive status/control bits  */
 #define MAL_RX_CTRL_EMPTY	0x8000
@@ -171,6 +152,85 @@ struct mal_descriptor {
 #define MAL_TX_CTRL_CM		0x2000
 #define MAL_TX_CTRL_LAST	0x1000
 #define MAL_TX_CTRL_INTR	0x0400
+
+#define MAL_CHAN_MASK(n)	(0x80000000 >> (n))
+
+/* MAL Buffer Descriptor structure */
+struct mal_descriptor {
+	u16 ctrl;		/* MAL / Commac status control bits */
+	u16 data_len;		/* Max length is 4K-1 (12 bits)     */
+	u32 data_ptr;		/* pointer to actual data buffer    */
+};
+
+#else /* !CONFIG_EMAC_TOMAL */
+
+#define MAL_MAX_TX_SIZE		4080
+#define MAL_MAX_RX_SIZE		4080
+
+#define MAL_CFG				0
+#define   TOMAL_CFG_RX_MAC(x)		(0x00800000 >> (x))
+#define   TOMAL_CFG_TX_MAC(x)		(0x00200000 >> (x))
+#define   TOMAL_CFG_PLB_FREQ_250	0x00000000
+#define   TOMAL_CFG_PLB_FREQ_300	0x00040000
+#define   TOMAL_CFG_PLB_FREQ_350	0x00080000
+#define   TOMAL_CFG_PLB_FREQ_400	0x000c0000
+#define   TOMAL_CFG_PLB_M_POWER		0x00000080
+#define   TOMAL_CFG_SLEEP		0x00000002
+#define   MAL_CFG_SR			0x00000001 /* soft reset */
+
+#define TOMAL_RX_MAC			0x1b20
+#define   TOMAL_RX_MAC_CODE_ERROR	0x00001000
+#define   TOMAL_RX_MAC_PARITY_ERROR	0x00000400
+#define   TOMAL_RX_MAC_OVERRUN		0x00000200
+#define   TOMAL_RX_MAC_PAUSE_FRAME	0x00000100
+#define   TOMAL_RX_MAC_BAD_FRAME	0x00000080
+#define   TOMAL_RX_MAC_RUNT_FRAME	0x00000040
+#define   TOMAL_RX_MAC_SHORT_EVENT	0x00000020
+#define   TOMAL_RX_MAC_ALIGN_ERROR	0x00000010
+#define   TOMAL_RX_MAC_BAD_FCS		0x00000008
+#define   TOMAL_RX_MAC_FRAME_TOO_LONG	0x00000004
+#define   TOMAL_RX_MAC_OUT_RANGE_ERROR	0x00000002
+#define   TOMAL_RX_MAC_IN_RANGE_ERROR	0x00000001
+
+#define MAL_TXCASR		0x04
+#define MAL_TXCARR		0x05
+#define MAL_TXEOBISR		0x06
+#define MAL_TXDEIR		0x07
+#define MAL_RXCASR		0x10
+#define MAL_RXCARR		0x11
+#define MAL_RXEOBISR		0x12
+#define MAL_RXDEIR		0x13
+#define MAL_TXCTPR(n)		((n) + 0x20)
+#define MAL_RXCTPR(n)		((n) + 0x40)
+#define MAL_RCBS(n)		((n) + 0x60)
+
+
+
+
+#define TOMAL_DESC_CODE_RX	0x6000
+#define TOMAL_DESC_CODE_TX	0x6000
+#define TOMAL_DESC_CODE_BRANCH  0x2000
+
+struct mal_descriptor {
+	u16 ctrl;
+	u16 data_len;
+	u32 status;
+	u64 data_ptr;
+};
+
+#endif /* CONFIG_EMAC_TOMAL */
+
+
+static inline int mal_rx_size(int len)
+{
+	len = (len + 0xf) & ~0xf;
+	return len > MAL_MAX_RX_SIZE ? MAL_MAX_RX_SIZE : len;
+}
+
+static inline int mal_tx_chunks(int len)
+{
+	return (len + MAL_MAX_TX_SIZE - 1) / MAL_MAX_TX_SIZE;
+}
 
 struct mal_commac_ops {
 	void	(*poll_tx) (void *dev);
@@ -191,8 +251,12 @@ struct mal_commac {
 };
 
 struct ibm_ocp_mal {
+#ifdef CONFIG_EMAC_TOMAL
+	unsigned int		ioaddr;
+#else
 	int			dcrbase;
 	dcr_host_t		dcrhost;
+#endif
 
 	struct list_head	poll_list;
 	struct net_device	poll_dev;
@@ -207,6 +271,19 @@ struct ibm_ocp_mal {
 	struct ocp_def		*def;
 };
 
+#ifdef CONFIG_EMAC_TOMAL
+static inline u32 get_mal_dcrn(struct ibm_ocp_mal *mal, int reg)
+{
+	return in_be32(mal->ioaddr + reg);
+}
+
+static inline void set_mal_dcrn(struct ibm_ocp_mal *mal, int reg, u32 val)
+{
+	out_be32(mal->ioaddr + reg, val);
+}
+
+#else
+
 static inline u32 get_mal_dcrn(struct ibm_ocp_mal *mal, int reg)
 {
 	return dcr_read(mal->dcrhost, mal->dcrbase + reg);
@@ -216,6 +293,8 @@ static inline void set_mal_dcrn(struct ibm_ocp_mal *mal, int reg, u32 val)
 {
 	dcr_write(mal->dcrhost, mal->dcrbase + reg, val);
 }
+#endif /* CONFIG_EMAC_TOMAL */
+
 
 /* Register MAL devices */
 int mal_init(void) __init;

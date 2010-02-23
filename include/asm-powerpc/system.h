@@ -498,6 +498,7 @@ __cmpxchg_local(volatile void *ptr, unsigned long old, unsigned long new,
 #define NET_SKB_PAD	L1_CACHE_BYTES
 #endif
 
+
 #define arch_align_stack(x) (x)
 
 /* Used in very early kernel initialization. */

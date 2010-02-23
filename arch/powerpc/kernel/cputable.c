@@ -1197,6 +1197,21 @@ static struct cpu_spec cpu_specs[] = {
 		.dcache_bsize		= 32,
 		.platform		= "ppc440",
 	},
+	{ /* 450 Blue Gene/P */
+		.pvr_mask               = 0xfffffff0,
+		.pvr_value              = 0x52131880,
+		.cpu_name               = "450 Blue Gene/P DD2",
+		.cpu_features           = CPU_FTRS_44X,
+		.cpu_user_features      = COMMON_USER_BOOKE | PPC_FEATURE_HAS_FPU,
+		.icache_bsize           = 32,
+#ifdef CONFIG_L1_WRITETHROUGH
+		/* report 0-size dcbz in write-through mode */
+		.dcache_bsize           = 0,
+#else
+		.dcache_bsize           = 32,
+#endif
+		.platform		= "ppc450",
+	},
 #endif /* CONFIG_44x */
 #ifdef CONFIG_FSL_BOOKE
 	{	/* e200z5 */

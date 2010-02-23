@@ -83,6 +83,84 @@ static int store_updates_sp(struct pt_regs *regs)
 	return 0;
 }
 
+#if defined(CONFIG_SMP) && defined(CONFIG_ICBI_LOCAL_ONLY)
+struct non_coherent_fixup_param {
+	struct page		*page;
+	unsigned long		address;
+	struct mm_struct	*mm;
+};
+static void non_coherent_fixup_cache_tlb(void *parm)
+{
+	struct non_coherent_fixup_param	*p = parm;
+
+	flush_dcache_icache_page(p->page);
+	_tlbie(p->address, p->mm->context.id);
+}
+#endif
+
+static void do_fixup_access_perms(struct vm_area_struct *vma,
+				  unsigned long address,
+				  int is_write, int is_exec)
+{
+#if defined(CONFIG_4xx) || defined(CONFIG_BOOKE)
+	struct mm_struct *mm = vma->vm_mm;
+	pte_t *ptep = NULL;
+	pmd_t *pmdp;
+
+	/* Since 4xx/Book-E supports per-page execute permission,
+	 * we lazily flush dcache to icache. We also fixup HWWRITE
+	 * here
+	 */
+	if (get_pteptr(mm, address, &ptep, &pmdp)) {
+		spinlock_t *ptl = pte_lockptr(mm, pmdp);
+		pte_t old;
+
+		spin_lock(ptl);
+		old = *ptep;
+		if (pte_present(old)) {
+			struct page *page = pte_page(old);
+
+			if (is_exec) {
+#if defined(CONFIG_SMP) && defined(CONFIG_ICBI_LOCAL_ONLY)
+				struct non_coherent_fixup_param param = {
+					.page		= page,
+					.address	= address,
+					.mm		= mm,
+				};
+				pte_update(ptep, _PAGE_HWWRITE, 0);
+				on_each_cpu(non_coherent_fixup_cache_tlb, &param, 1, 1);
+				pte_update(ptep, 0, _PAGE_HWEXEC);
+				pte_unmap_unlock(ptep, ptl);
+				return;
+#else
+				if (!test_bit(PG_arch_1, &page->flags)) {
+					flush_dcache_icache_page(page);
+					set_bit(PG_arch_1, &page->flags);
+				}
+				pte_update(ptep, 0, _PAGE_HWEXEC);
+				_tlbie(address, vma->vm_mm->context.id);
+#endif
+			}
+			if (is_write &&
+			    (pte_val(old) & _PAGE_RW) &&
+			    (pte_val(old) & _PAGE_DIRTY) &&
+			    !(pte_val(old) & _PAGE_HWWRITE)) {
+#if defined(CONFIG_SMP) && defined(CONFIG_ICBI_LOCAL_ONLY)
+				pte_update(ptep, _PAGE_HWEXEC, _PAGE_HWWRITE);
+#else
+				pte_update(ptep, 0, _PAGE_HWWRITE);
+#endif
+			}
+		}
+		if (!pte_same(old, *ptep))
+			flush_tlb_page(vma, address);
+		pte_unmap_unlock(ptep, ptl);
+	}
+#endif
+}
+
+
+
 /*
  * For 600- and 800-family processors, the error_code parameter is DSISR
  * for a data fault, SRR1 for an instruction fault. For 400-family processors
@@ -96,6 +174,8 @@ int do_page_fault(struct pt_regs *regs, unsigned long address,
 	struct mm_struct *mm = current->mm;
 	siginfo_t info;
 	int code = SEGV_MAPERR;
+	int trap = TRAP(regs);
+	int is_exec = (trap == 0x400);
 #if defined(CONFIG_4xx) || defined (CONFIG_BOOKE)
 	int is_write = error_code & ESR_DST;
 #else
@@ -107,14 +187,14 @@ int do_page_fault(struct pt_regs *regs, unsigned long address,
 	 * bits we are interested in.  But there are some bits which
 	 * indicate errors in DSISR but can validly be set in SRR1.
 	 */
-	if (TRAP(regs) == 0x400)
+	if (is_exec)
 		error_code &= 0x48200000;
 	else
 		is_write = error_code & 0x02000000;
 #endif /* CONFIG_4xx || CONFIG_BOOKE */
 
 #if defined(CONFIG_XMON) || defined(CONFIG_KGDB)
-	if (debugger_fault_handler && TRAP(regs) == 0x300) {
+	if (debugger_fault_handler && trap == 0x300) {
 		debugger_fault_handler(regs);
 		return 0;
 	}
@@ -197,43 +277,6 @@ good_area:
 	if (is_write) {
 		if (!(vma->vm_flags & VM_WRITE))
 			goto bad_area;
-#if defined(CONFIG_4xx) || defined(CONFIG_BOOKE)
-	/* an exec  - 4xx/Book-E allows for per-page execute permission */
-	} else if (TRAP(regs) == 0x400) {
-		pte_t *ptep;
-		pmd_t *pmdp;
-
-#if 0
-		/* It would be nice to actually enforce the VM execute
-		   permission on CPUs which can do so, but far too
-		   much stuff in userspace doesn't get the permissions
-		   right, so we let any page be executed for now. */
-		if (! (vma->vm_flags & VM_EXEC))
-			goto bad_area;
-#endif
-
-		/* Since 4xx/Book-E supports per-page execute permission,
-		 * we lazily flush dcache to icache. */
-		ptep = NULL;
-		if (get_pteptr(mm, address, &ptep, &pmdp)) {
-			spinlock_t *ptl = pte_lockptr(mm, pmdp);
-			spin_lock(ptl);
-			if (pte_present(*ptep)) {
-				struct page *page = pte_page(*ptep);
-
-				if (!test_bit(PG_arch_1, &page->flags)) {
-					flush_dcache_icache_page(page);
-					set_bit(PG_arch_1, &page->flags);
-				}
-				pte_update(ptep, 0, _PAGE_HWEXEC);
-				_tlbie(address);
-				pte_unmap_unlock(ptep, ptl);
-				up_read(&mm->mmap_sem);
-				return 0;
-			}
-			pte_unmap_unlock(ptep, ptl);
-		}
-#endif
 	/* a read */
 	} else {
 		/* protection fault */
@@ -263,6 +306,9 @@ good_area:
 	default:
 		BUG();
 	}
+
+	/* Fixup _PAGE_HWEXEC and _PAGE_HWWRITE if necessary */
+	do_fixup_access_perms(vma, address, is_write, is_exec);
 
 	up_read(&mm->mmap_sem);
 	/*

@@ -17,6 +17,9 @@
 #ifndef __ASM_IBM44x_H__
 #define __ASM_IBM44x_H__
 
+#ifdef CONFIG_BGP
+#define NR_BOARD_IRQS 512
+#endif
 
 #ifndef NR_BOARD_IRQS
 #define NR_BOARD_IRQS 0

@@ -32,8 +32,10 @@
 unsigned long next_mmu_context;
 unsigned long context_map[LAST_CONTEXT / BITS_PER_LONG + 1];
 #ifdef FEW_CONTEXTS
+spinlock_t context_lock;
 atomic_t nr_free_contexts;
 struct mm_struct *context_mm[LAST_CONTEXT+1];
+DEFINE_PER_CPU(unsigned long, current_context);
 void steal_context(void);
 #endif /* FEW_CONTEXTS */
 
@@ -73,6 +75,10 @@ void
 steal_context(void)
 {
 	struct mm_struct *mm;
+
+#ifdef CONFIG_SMP
+	BUG();
+#endif
 
 	/* free up context `next_mmu_context' */
 	/* if we shouldn't free context 0, don't... */

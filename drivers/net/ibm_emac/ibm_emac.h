@@ -26,7 +26,7 @@
 #if !defined(CONFIG_405GP) && !defined(CONFIG_405GPR) && !defined(CONFIG_405EP) && \
     !defined(CONFIG_440GP) && !defined(CONFIG_440GX) && !defined(CONFIG_440SP) && \
     !defined(CONFIG_440EP) && !defined(CONFIG_NP405H) && !defined(CONFIG_440SPE) && \
-    !defined(CONFIG_440GR)
+    !defined(CONFIG_440GR) && !defined(CONFIG_BGP)
 #error	"Unknown SoC. Please, check chip user manual and make sure EMAC defines are OK"
 #endif
 
@@ -58,9 +58,21 @@ struct emac_regs {
 	u32 stacr;		/* special 	*/
 	u32 trtr;		/* special 	*/
 	u32 rwmr;		/* Reset 	*/
+#ifdef CONFIG_IBM_XEMAC
+	u32 sop;		/* Reset	*/
+	u32 iahr2;		/* Reset	*/
+	u32 ialr2;		/* Reset	*/
+	u32 octxh;
+	u32 octxl;
+	u32 ocrxh;
+	u32 ocrxl;
+	u32 revid;
+	u32 dbg;
+#else
 	u32 octx;
 	u32 ocrx;
 	u32 ipcr;
+#endif
 };
 
 #if !defined(CONFIG_IBM_EMAC4)

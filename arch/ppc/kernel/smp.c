@@ -120,6 +120,106 @@ void smp_send_tlb_invalidate(int cpu)
 		smp_message_pass(MSG_ALL_BUT_SELF, PPC_MSG_INVALIDATE_TLB);
 }
 
+#ifdef CONFIG_TLBIE_LOCAL_ONLY
+
+/* Most of this comes straight from i386  */
+static cpumask_t flush_cpumask;
+static struct mm_struct * flush_mm;
+static unsigned long flush_va;
+static DEFINE_SPINLOCK(tlbstate_lock);
+#define FLUSH_ALL	0xffffffff
+
+void smp_invalidate_interrupt(void)
+{
+	unsigned long cpu = get_cpu();
+
+	if (!cpu_isset(cpu, flush_cpumask))
+		goto out;
+
+	if (flush_va == FLUSH_ALL)
+		local_flush_tlb_mm(flush_mm);
+	else
+		local_flush_tlb_page(flush_mm, flush_va);
+	mb();
+	cpu_clear(cpu, flush_cpumask);
+out:
+	put_cpu_no_resched();
+}
+
+static void flush_tlb_others(cpumask_t cpumask, struct mm_struct *mm,
+			     unsigned long va)
+{
+	/*
+	 * A couple of (to be removed) sanity checks:
+	 *
+	 * - current CPU must not be in mask
+	 * - mask must exist :)
+	 */
+	BUG_ON(cpus_empty(cpumask));
+	BUG_ON(cpu_isset(smp_processor_id(), cpumask));
+	BUG_ON(!mm);
+
+	/* If a CPU which we ran on has gone down, OK. */
+	cpus_and(cpumask, cpumask, cpu_online_map);
+	if (cpus_empty(cpumask))
+		return;
+
+	/*
+	 * i'm not happy about this global shared spinlock in the
+	 * MM hot path, but we'll see how contended it is.
+	 * Temporarily this turns IRQs off, so that lockups are
+	 * detected by the NMI watchdog.
+	 */
+	spin_lock(&tlbstate_lock);
+
+	flush_mm = mm;
+	flush_va = va;
+	flush_cpumask = cpumask;
+	wmb();
+
+	/*
+	 * We have to send the IPI only to CPUs affected but we don't know
+	 * how to do that with our stupid smp_message_pass API, we'll fix
+	 * that later. --BenH.
+	 */
+	smp_message_pass(MSG_ALL_BUT_SELF, PPC_MSG_INVALIDATE_TLB);
+
+	while (!cpus_empty(flush_cpumask))
+		/* nothing. lockup detection does not belong here */
+		mb();
+
+	flush_mm = NULL;
+	flush_va = 0;
+	spin_unlock(&tlbstate_lock);
+}
+
+void smp_flush_tlb_mm(struct mm_struct *mm)
+{
+	cpumask_t cpu_mask;
+
+	preempt_disable();
+	cpu_mask = mm->cpu_vm_mask;
+	cpu_clear(smp_processor_id(), cpu_mask);
+	local_flush_tlb_mm(mm);
+	if (!cpus_empty(cpu_mask))
+		flush_tlb_others(cpu_mask, mm, FLUSH_ALL);
+	preempt_enable();
+}
+
+void smp_flush_tlb_page(struct mm_struct *mm, unsigned long va)
+{
+	cpumask_t cpu_mask;
+
+	preempt_disable();
+	cpu_mask = mm->cpu_vm_mask;
+	cpu_clear(smp_processor_id(), cpu_mask);
+	local_flush_tlb_page(mm, va);
+	if (!cpus_empty(cpu_mask))
+		flush_tlb_others(cpu_mask, mm, va);
+	preempt_enable();
+}
+#endif /* CONFIG_TLBIE_LOCAL_ONLY */
+
 void smp_send_reschedule(int cpu)
 {
 	/*

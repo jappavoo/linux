@@ -189,6 +189,10 @@ static struct aligninfo aligninfo[128] = {
 	INVALID,		/* 11 1 1111 */
 };
 
+#ifdef CONFIG_DOUBLE_HUMMER
+#warning VU: alignment handling unsupported for BG double hummer
+#endif
+
 /*
  * Create a DSISR value from the instruction
  */

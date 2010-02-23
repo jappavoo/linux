@@ -80,6 +80,10 @@ config PPC_I8259
 	bool
 	default n
 
+config BGIC
+	bool
+	default n
+
 config U3_DART
 	bool
 	depends on PPC_MULTIPLATFORM && PPC64

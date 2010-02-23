@@ -18,6 +18,7 @@ kernel-vmlinux.strip.c
 kernel-vmlinux.strip.gz
 mktree
 uImage
+uImage.elf
 cuImage
 cuImage.bin.gz
 cuImage.elf

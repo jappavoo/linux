@@ -108,6 +108,7 @@ config E500
 endchoice
 
 config PPC_FPU
+	default y if BLUEGENE
 	bool
 
 config PPC_DCR_NATIVE
@@ -283,7 +284,17 @@ config PPC_STD_MMU
 
 config NOT_COHERENT_CACHE
 	bool
-	depends on 4xx || 8xx || E200
+	depends on !BGP && (4xx || 8xx || E200)
+	default y
+
+config TLBIE_LOCAL_ONLY
+	bool
+	depends on SMP && BLUEGENE
+	default y
+
+config ICBI_LOCAL_ONLY
+	bool
+	depends on SMP && BLUEGENE
 	default y
 
 endmenu
@@ -947,7 +958,7 @@ config PPCBUG_NVRAM
 	default y if PPC_PREP
 
 config SMP
-	depends on PPC_STD_MMU
+	depends on PPC_STD_MMU || BGP
 	bool "Symmetric multi-processing support"
 	---help---
 	  This enables support for systems with more than one CPU. If you have
@@ -1227,7 +1238,7 @@ config MCA
 
 config PCI
 	bool "PCI support" if 40x || CPM2 || 83xx || 85xx || PPC_MPC52xx
-	default y if !40x && !CPM2 && !8xx && !APUS && !83xx && !85xx
+	default y if !40x && !CPM2 && !8xx && !APUS && !83xx && !85xx && !BLUEGENE
 	default PCI_PERMEDIA if !4xx && !CPM2 && !8xx && APUS
 	default PCI_QSPAN if !4xx && !CPM2 && 8xx
 	help

@@ -98,7 +98,7 @@ _GLOBAL(cacheable_memzero)
 	bdnz	4b
 3:	mtctr	r9
 	li	r7,4
-#if !defined(CONFIG_8xx)
+#if !defined(CONFIG_8xx) && !defined(CONFIG_L1_WRITETHROUGH)
 10:	dcbz	r7,r6
 #else
 10:	stw	r4, 4(r6)
@@ -110,6 +110,9 @@ _GLOBAL(cacheable_memzero)
 	stw	r4, 24(r6)
 	stw	r4, 28(r6)
 	stw	r4, 32(r6)
+#if CACHE_LINE_SIZE >= 64
+#error FIXME
+#endif
 #endif /* CACHE_LINE_SIZE */
 #endif
 	addi	r6,r6,CACHELINE_BYTES
@@ -200,7 +203,7 @@ _GLOBAL(cacheable_memcpy)
 	mtctr	r0
 	beq	63f
 53:
-#if !defined(CONFIG_8xx)
+#if !defined(CONFIG_8xx) && !defined(CONFIG_L1_WRITETHROUGH)
 	dcbz	r11,r6
 #endif
 	COPY_16_BYTES
@@ -356,11 +359,24 @@ _GLOBAL(__copy_tofrom_user)
 	li	r11,4
 	beq	63f
 
-#ifdef CONFIG_8xx
+#if defined(CONFIG_8xx) || defined(CONFIG_L1_WRITETHROUGH)
 	/* Don't use prefetch on 8xx */
 	mtctr	r0
 	li	r0,0
 53:	COPY_16_BYTES_WITHEX(0)
+#if L1_CACHE_BYTES >= 32
+	COPY_16_BYTES_WITHEX(1)
+#if L1_CACHE_BYTES >= 64
+	COPY_16_BYTES_WITHEX(2)
+	COPY_16_BYTES_WITHEX(3)
+#if L1_CACHE_BYTES >= 128
+	COPY_16_BYTES_WITHEX(4)
+	COPY_16_BYTES_WITHEX(5)
+	COPY_16_BYTES_WITHEX(6)
+	COPY_16_BYTES_WITHEX(7)
+#endif
+#endif
+#endif
 	bdnz	53b
 
 #else /* not CONFIG_8xx */

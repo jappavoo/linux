@@ -776,6 +776,9 @@ unsigned int irq_find_mapping(struct irq_host *host,
 {
 	unsigned int i;
 	unsigned int hint = hwirq % irq_virq_count;
+	int count = 10000;
+
+//	printk("irq_find_mapping host=%p, %d\n", host, hwirq);
 
 	/* Look for default host if nececssary */
 	if (host == NULL)
@@ -798,6 +801,10 @@ unsigned int irq_find_mapping(struct irq_host *host,
 		i++;
 		if (i >= irq_virq_count)
 			i = NUM_ISA_INTERRUPTS;
+		if (--count == 0) {
+		    printk("timeout irq_find_mapping %d\n", hwirq);
+		    return NO_IRQ;
+		}
 	} while(i != hint);
 	return NO_IRQ;
 }

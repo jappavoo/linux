@@ -89,6 +89,10 @@ void ppc4xx_init(unsigned long r3, unsigned long r4, unsigned long r5,
 #include <platforms/4xx/bamboo.h>
 #endif
 
+#if defined(CONFIG_BLUEGENE)
+#include <platforms/4xx/bluegene.h>
+#endif
+
 #if defined(CONFIG_EBONY)
 #include <platforms/4xx/ebony.h>
 #endif

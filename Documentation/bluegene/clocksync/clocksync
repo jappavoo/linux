@@ -1,0 +1,12 @@
+#!/bin/bash
+
+if [ $# -ne 1 ]; then
+    echo "Usage: $0 <host>"
+    exit -1
+fi
+host=$1
+
+clocksync_path=$(cd $(dirname $0); pwd)
+
+time_params=$(ssh $host $clocksync_path/get_time)
+$clocksync_path/set_time $time_params
