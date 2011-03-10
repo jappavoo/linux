@@ -51,6 +51,9 @@ _GLOBAL(load_up_fpu)
 	toreal(r4)
 	addi	r4,r4,THREAD		/* want last_task_used_math->thread */
 	SAVE_32FPRS(0, r4)
+#ifdef CONFIG_DOUBLE_HUMMER
+        SAVE_32SFPRS(0, r10, r3)
+#endif /* CONFIG_DOUBLE_HUMMER */
 	mffs	fr0
 	stfd	fr0,THREAD_FPSCR(r4)
 	PPC_LL	r5,PT_REGS(r4)
@@ -78,6 +81,9 @@ _GLOBAL(load_up_fpu)
 	lfd	fr0,THREAD_FPSCR(r5)
 	MTFSF_L(fr0)
 	REST_32FPRS(0, r5)
+#ifdef  CONFIG_DOUBLE_HUMMER
+        REST_32SFPRS(0, r10, r5)
+#endif  /* CONFIG_DOUBLE_HUMMER */
 #ifndef CONFIG_SMP
 	subi	r4,r5,THREAD
 	fromreal(r4)
@@ -107,6 +113,9 @@ _GLOBAL(giveup_fpu)
 	PPC_LL	r5,PT_REGS(r3)
 	PPC_LCMPI	0,r5,0
 	SAVE_32FPRS(0, r3)
+#ifdef CONFIG_DOUBLE_HUMMER
+        SAVE_32SFPRS(0, r10, r3)
+#endif /* CONFIG_DOUBLE_HUMMER */
 	mffs	fr0
 	stfd	fr0,THREAD_FPSCR(r3)
 	beq	1f

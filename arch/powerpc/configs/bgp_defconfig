@@ -1,7 +1,7 @@
 #
 # Automatically generated make config: don't edit
 # Linux kernel version: 2.6.22
-# Mon Nov  3 16:20:50 2008
+# Wed Feb 11 21:13:17 2009
 #
 # CONFIG_PPC64 is not set
 CONFIG_PPC32=y
@@ -830,7 +830,7 @@ CONFIG_INOTIFY_USER=y
 CONFIG_DNOTIFY=y
 # CONFIG_AUTOFS_FS is not set
 # CONFIG_AUTOFS4_FS is not set
-# CONFIG_FUSE_FS is not set
+CONFIG_FUSE_FS=y
 
 #
 # CD-ROM/DVD Filesystems

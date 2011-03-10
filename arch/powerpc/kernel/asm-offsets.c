@@ -88,7 +88,9 @@ int main(void)
 	DEFINE(THREAD_USED_SPE, offsetof(struct thread_struct, used_spe));
 #endif /* CONFIG_SPE */
 #endif /* CONFIG_PPC64 */
-
+#ifdef CONFIG_DOUBLE_HUMMER
+	DEFINE(THREAD_SFPR0, offsetof(struct thread_struct, sfpr[0]));
+#endif /* CONFIG_DOUBLE_HUMMER */
 	DEFINE(TI_FLAGS, offsetof(struct thread_info, flags));
 	DEFINE(TI_LOCAL_FLAGS, offsetof(struct thread_info, local_flags));
 	DEFINE(TI_PREEMPT, offsetof(struct thread_info, preempt_count));

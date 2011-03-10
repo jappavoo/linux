@@ -166,7 +166,7 @@ struct thread_struct {
 	int		used_spe;	/* set if process has used spe */
 #endif /* CONFIG_SPE */
 #ifdef CONFIG_DOUBLE_HUMMER
-	double		sfpr[32];
+        double          sfpr[32];
 #endif /* CONFIG_DOUBLE_HUMMER */
 };
 
