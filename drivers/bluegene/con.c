@@ -1,5 +1,6 @@
 /*********************************************************************
  *
+ * Copyright (C) 2011, Eric Van Hensbergen, IBM Corporation
  * Copyright (C) 2007-2008, Volkmar Uhlig, IBM Corporation
  *
  * Description:   Console Driver over BG networks
@@ -34,6 +35,7 @@
 #define CON_TTY_BROADCAST	((union bgtree_header){ bcast: { p2p: 0 }})
 #define CON_TTY_P2P(v)		((union bgtree_header){ p2p: { p2p: 1, \
 							       vector: v }})
+#define MAXMEMLOG               0x4000
 
 struct tty_route {
     unsigned int send_id;
@@ -94,10 +96,38 @@ struct bg_initconsole {
     char buffer[CON_BUF_SIZE];
 };
 
+/*
+ * An in memory copy of console
+ * messages to help debug when
+ * the network fails.
+ */
+static struct {
+	unsigned int write;
+	char buf[MAXMEMLOG];
+} cnslog;
+
 static LIST_HEAD(initcon_list);
 
 static int bg_tty_proc_register(struct bg_console *bgcon);
 static int bg_tty_proc_unregister(struct bg_console *bgcon);
+
+static void writelogcopy(const char *buf, int len)
+{
+	int count = len;
+	int offset = 0;
+
+	while(count > 0) {
+		int c = (MAXMEMLOG - cnslog.write);
+		if(c > count)
+			c = count;
+		memcpy(cnslog.buf+cnslog.write, buf+offset, c);
+		cnslog.write += c;
+		offset += c;
+		if(cnslog.write >= MAXMEMLOG)
+			cnslog.write = 0;
+		count -= c;
+	}
+}
 
 static void bgtty_link_hdr_init(struct bglink_hdr_tree *lnkhdr,
 				unsigned long count)
@@ -132,6 +162,8 @@ static void bg_console_write(struct console *co, const char *b, unsigned count)
 {
     struct bg_initconsole *bgcon = (struct bg_initconsole*)co->data;
     int len;
+
+    writelogcopy(b, count);
 
     if (!bgcon->tree)
 	bgcon->tree = bgtree_get_dev();
