@@ -78,7 +78,7 @@ extern inline void outs_be128(void *port, void *src, unsigned num)
 
 extern inline void outs_zero128(void *port, unsigned num)
 {
-    static u32 zero[4] __attribute__((aligned(16))) = {0, };
+    u32 zero[4] __attribute__((aligned(16))) = {0, };
     BUG_ON((u32)port & 0xf);
 
     while (num--)

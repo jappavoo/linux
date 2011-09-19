@@ -239,7 +239,6 @@ static void bgtree_enable_interrupts(struct bg_tree *tree)
     spin_unlock_irqrestore(&tree->lock, flags);
 }
 
-
 static void bgtree_disable_interrupts(struct bg_tree *tree)
 {
     spin_lock(&tree->lock);
@@ -250,12 +249,8 @@ static void bgtree_disable_interrupts(struct bg_tree *tree)
     spin_unlock(&tree->lock);
 }
 
-void bgtree_enable_inj_wm_interrupt(struct bg_tree *tree, int channel)
+void __bgtree_enable_inj_wm_interrupt(struct bg_tree *tree, int channel)
 {
-    unsigned long flags;
-
-    spin_lock_irqsave(&tree->lock, flags);
-
     if ((tree->inj_wm_mask & (_TR_INJ_PIX_WM0 >> channel)) == 0) {
 	tree->inj_wm_mask |= _TR_INJ_PIX_WM0 >> channel;
 	mtdcrx(tree->dcrbase + _BGP_DCR_TR_INJ_PIXEN,
@@ -263,12 +258,21 @@ void bgtree_enable_inj_wm_interrupt(struct bg_tree *tree, int channel)
 
 	mod_timer(&tree->chn[channel].inj_timer, jiffies + HZ/4);
     }
+}
+
+void bgtree_enable_inj_wm_interrupt(struct bg_tree *tree, int channel)
+{
+    unsigned long flags;
+
+    spin_lock_irqsave(&tree->lock, flags);
+
+    __bgtree_enable_inj_wm_interrupt(tree, channel);
 
     spin_unlock_irqrestore(&tree->lock, flags);
 }
 
 /* prereq: tree lock held and irqs disabled */
-void bgtree_disable_inj_wm_interrupt(struct bg_tree *tree, int channel)
+void __bgtree_disable_inj_wm_interrupt(struct bg_tree *tree, int channel)
 {
     if ((tree->inj_wm_mask & (_TR_INJ_PIX_WM0 >> channel)) != 0) {
 	if (tree->chn[channel].inj_wedged) {
@@ -281,6 +285,15 @@ void bgtree_disable_inj_wm_interrupt(struct bg_tree *tree, int channel)
 	mtdcrx(tree->dcrbase + _BGP_DCR_TR_INJ_PIXEN,
 	       TREE_IRQMASK_INJ | tree->inj_wm_mask);
     }
+}
+
+void bgtree_disable_inj_wm_interrupt(struct bg_tree *tree, int channel)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&tree->lock, flags);
+	__bgtree_disable_inj_wm_interrupt(tree, channel);
+	spin_unlock_irqrestore(&tree->lock, flags);
 }
 
 /* prereq: tree lock held and irqs disabled */
@@ -826,9 +839,9 @@ static irqreturn_t bgtree_inject_interrupt(int irq, void *dev)
     pend_irq = mfdcrx(tree->dcrbase +_BGP_DCR_TR_INJ_PIXF);
 
     if (pend_irq & ~(_TR_INJ_PIX_WM0 | _TR_INJ_PIX_WM1 | _TR_INJ_PIX_ENABLE)) {
-	BUG();
-	printk("bgtree: unhandled inject IRQ bits=%x\n", pend_irq);
+	printk(KERN_ERR "bgtree: unhandled inject IRQ bits=%x\n", pend_irq);
 	// XXX: handle error situation
+	BUG();
     }
 
     /* chn in outer loop since typically only one inject IRQ is pending */
@@ -844,7 +857,7 @@ static irqreturn_t bgtree_inject_interrupt(int irq, void *dev)
 	     * watermark.  We are still holding tree->lock and thus no new
 	     * packets can be enqueued. */
 	    if (rc == 0) {
-		bgtree_disable_inj_wm_interrupt(tree, chn);
+		__bgtree_disable_inj_wm_interrupt(tree, chn);
 	    } else {
 		bgtree_continue_inj_wm_interrupt(tree, chn);
 	    }
