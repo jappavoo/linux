@@ -19,7 +19,7 @@
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 #include <linux/bootmem.h>
-
+#include <linux/kthread.h>
 #include <asm/of_platform.h>
 
 #include "link.h"
@@ -35,7 +35,10 @@
 #define CON_TTY_BROADCAST	((union bgtree_header){ bcast: { p2p: 0 }})
 #define CON_TTY_P2P(v)		((union bgtree_header){ p2p: { p2p: 1, \
 							       vector: v }})
-#define MAXMEMLOG               0x4000
+extern void mailbox_puts(const unsigned char *s, int count);
+static struct task_struct *bg_tty_task;
+static int bg_tty_kick = 0;
+DECLARE_WAIT_QUEUE_HEAD(bg_tty_wq);
 
 struct tty_route {
     unsigned int send_id;
@@ -79,8 +82,6 @@ struct bg_console {
     struct list_head list;
 };
 
-static struct bg_console bg_console;
-
 #define CON_BUF_SIZE	2048
 
 struct bg_initconsole {
@@ -92,41 +93,23 @@ struct bg_initconsole {
     struct bg_tree *tree;
     struct list_head list;
 
+    spinlock_t lock;
     int bufidx;
     char buffer[CON_BUF_SIZE];
 };
 
-/*
- * An in memory copy of console
- * messages to help debug when
- * the network fails.
- */
-static struct {
-	unsigned int write;
-	char buf[MAXMEMLOG];
-} cnslog;
+static struct bg_console bg_console;
+static struct bg_initconsole *bgic = NULL;
 
 static LIST_HEAD(initcon_list);
 
 static int bg_tty_proc_register(struct bg_console *bgcon);
 static int bg_tty_proc_unregister(struct bg_console *bgcon);
 
-static void writelogcopy(const char *buf, int len)
+static void bg_tty_wakeup(void)
 {
-	int count = len;
-	int offset = 0;
-
-	while(count > 0) {
-		int c = (MAXMEMLOG - cnslog.write);
-		if(c > count)
-			c = count;
-		memcpy(cnslog.buf+cnslog.write, buf+offset, c);
-		cnslog.write += c;
-		offset += c;
-		if(cnslog.write >= MAXMEMLOG)
-			cnslog.write = 0;
-		count -= c;
-	}
+	bg_tty_kick = 1;
+	wake_up_interruptible(&bg_tty_wq);
 }
 
 static void bgtty_link_hdr_init(struct bglink_hdr_tree *lnkhdr,
@@ -161,24 +144,11 @@ static int do_write(struct bg_initconsole *bgcon,
 static void bg_console_write(struct console *co, const char *b, unsigned count)
 {
     struct bg_initconsole *bgcon = (struct bg_initconsole*)co->data;
-    int len;
+    unsigned long flags;
 
-    writelogcopy(b, count);
-
+    spin_lock_irqsave(&bgcon->lock, flags);
     if (!bgcon->tree)
 	bgcon->tree = bgtree_get_dev();
-
-    /* if anything is buffered flush it first */
-    if (bgcon->bufidx) {
-	len = do_write(bgcon, bgcon->buffer, bgcon->bufidx);
-	bgcon->bufidx -= len;
-	if (len > 0 && bgcon->bufidx)
-	    memcpy(bgcon->buffer, bgcon->buffer + len, bgcon->bufidx);
-    }
-
-    /* if buffer is empty write the new data right away, otherwise buffer */
-    if (!bgcon->bufidx)
-	count -= do_write(bgcon, b, count);
 
     if (count) {
 	if (count + bgcon->bufidx > CON_BUF_SIZE)
@@ -186,12 +156,13 @@ static void bg_console_write(struct console *co, const char *b, unsigned count)
 	memcpy(&bgcon->buffer[bgcon->bufidx], b, count);
 	bgcon->bufidx += count;
     }
+    spin_unlock_irqrestore(&bgcon->lock, flags);
 }
 
 /*
  * console=bgtty0[,sndid,rcvid,{broadcast,treeid}]
  */
-static int bg_console_setup (struct console * con, char * options)
+static int bg_console_setup (struct console *con, char *options)
 {
     struct bg_initconsole *bgcon;
 
@@ -206,6 +177,7 @@ static int bg_console_setup (struct console * con, char * options)
     bgcon->tree = NULL;
     bgcon->tree_route = 15;
     bgcon->tree_channel = 0;
+    spin_lock_init(&bgcon->lock);
 
     list_add(&bgcon->list, &initcon_list);
 
@@ -236,6 +208,7 @@ static int bg_console_setup (struct console * con, char * options)
 	}
     }
 
+    bgic = bgcon; /* global copy */
     con->data = bgcon;
     return 0;
 }
@@ -326,8 +299,7 @@ static int con_receive(struct sk_buff *skb, struct bglink_hdr_tree *lnkhdr)
 	data = (struct bgtty_data*)tty->driver_data;
 
 	skb_queue_tail(&data->skb_list, skb);
-	if (!test_bit(TTY_THROTTLED, &tty->flags))
-	    bgtty_try_inject(data);
+	bg_tty_wakeup();
 
 	return 0;
     }
@@ -339,74 +311,94 @@ static int con_receive(struct sk_buff *skb, struct bglink_hdr_tree *lnkhdr)
 
 static int con_flush(int chn)
 {
+	bg_tty_wakeup();
+
+	return 0;
+}
+
+static int bg_tty_process_outbound(void)
+{
     struct bgtty_data *data, *tmp;
     struct bg_console *bgcon = &bg_console;
+
     int rc = 0;
 
     if (list_empty(&bgcon->list))
 	return 0;
 
-    /* called from IRQ context */
-    spin_lock(&bgcon->lock);
-
     list_for_each_entry_safe(data, tmp, &bgcon->list, list) {
-	BUG_ON(data->bufidx > CON_TTY_BUF_SIZE);
+	    if(data->bufidx > CON_TTY_BUF_SIZE) {
+		    /* this shouldn't happen */
+		    printk(KERN_ERR "data->bufidx %d > CON_TTYBUF_SIZE %d",
+			   data->bufidx, CON_TTY_BUF_SIZE);
+		    goto out;
+	    }
 
-	rc = __bgtree_xmit(bgcon->tree, bgcon->tree_channel, data->dest,
+	    rc = bgtree_xmit(bgcon->tree, bgcon->tree_channel, data->dest,
 			   &data->lnkhdr, data->buffer, data->bufidx);
-	if (rc != 0)
-	    goto out;
+	    if (rc != 0)
+		    goto out;
 
-	data->bufidx = 0;
-	mb();
-	list_del(&data->list);
-	data->list.next = NULL;
-
-	/* signal ldisc to get more data */
-	tty_wakeup(data->tty);
+	    data->bufidx = 0;
+	    mb();
+	    list_del(&data->list);
+	    data->list.next = NULL;
+            /* signal ldisc to get more data */
+	    tty_wakeup(data->tty);
     }
 
  out:
-    spin_unlock(&bgcon->lock);
     return rc;
 }
 
-#if 0
-/* serialized by tty code */
-static void bg_tty_flush_chars(struct tty_struct *tty)
+/* helper thread to keep us from deadlocking */
+static int bg_tty_thread(void *unused)
 {
-    struct bgtty_data *data = (struct bgtty_data*)tty->driver_data;
-    struct bg_console *bgcon = data->con;
+	unsigned long flags;
+	struct bg_console *bgcon = &bg_console;
+	struct tty_struct *tty;
+	unsigned int len;
+	unsigned int idx;
 
-    /* do not flush if enqueued into tree flush queue */
-    if (data->list.next != NULL)
-	return;
+	do {
+		// early console output processing
+		if (bgic && (bgic->bufidx)) {
+			spin_lock_irqsave(&bgic->lock, flags);
+			len = do_write(bgic, bgic->buffer, bgic->bufidx);
+	       	        bgic->bufidx -= len;
+			if(len > 0 && bgic->bufidx)
+				memcpy(bgic->buffer, bgic->buffer + len,
+				       bgic->bufidx);
+			spin_unlock_irqrestore(&bgic->lock, flags);
+		}
 
-    if (data->bufidx) {
-	bgtty_link_hdr_init(&data->lnkhdr, data->bufidx);
+		spin_lock_irqsave(&bgcon->lock, flags);
+		/* check for outbound first */
+		if (bg_tty_process_outbound() != 0)
+			bgtree_enable_inj_wm_interrupt(bgcon->tree,
+						       bgcon->tree_channel);
+		else 
+			bgtree_disable_inj_wm_interrupt(bgcon->tree,
+							bgcon->tree_channel);
 
-	if (bgtree_xmit(bgcon->tree, bgcon->tree_channel, data->dest,
-			&data->lnkhdr, data->buffer, data->bufidx) != 0)
-	    enqueue_retransmit(data);
-	else
-	    data->bufidx = 0;
-    }
-}
+		/* check for inbound */
+		for (idx = 0; idx < bgcon->num_tty; idx++) {
+			if(bgcon->tty_route[idx].count <= 0)
+				continue;
+			tty = bgcon->tty_driver->ttys[idx];
+			if(!tty || !tty->driver_data)
+				continue;
+			if (!test_bit(TTY_THROTTLED, &tty->flags))
+				bg_tty_unthrottle(tty);
+		}
 
-static void bg_tty_put_char(struct tty_struct *tty, unsigned char ch)
-{
-    BUG_ON(data->list.next != NULL);
+		spin_unlock_irqrestore(&bgcon->lock, flags);
+		wait_event_interruptible_timeout(bg_tty_wq,
+						 bg_tty_kick != 0, HZ/10);
+		bg_tty_kick = 0;
+	} while (!kthread_should_stop());
 
-    if (data->bufidx < CON_TTY_BUF_SIZE)
-	data->buffer[data->bufidx++] = ch;
-}
-#endif
-
-extern void enqueue_retransmit(struct bgtty_data *data)
-{
-    struct bg_console *bgcon = data->con;
-    list_add_rcu(&data->list, &bgcon->list);
-    bgtree_enable_inj_wm_interrupt(bgcon->tree, bgcon->tree_channel);
+	return 0;
 }
 
 static int bg_tty_write(struct tty_struct *tty,
@@ -431,16 +423,13 @@ static int bg_tty_write(struct tty_struct *tty,
 
     bgtty_link_hdr_init(&data->lnkhdr, count);
 
-    if (bgtree_xmit(bgcon->tree, bgcon->tree_channel, data->dest,
-		    &data->lnkhdr, (unsigned char*)buf, count) != 0) {
-	memcpy(data->buffer, buf, count);
-	data->bufidx = count;
-	mb();
-	enqueue_retransmit(data);
-    }
+    memcpy(data->buffer, buf, count);
+    data->bufidx = count;
+    mb();
+    list_add(&data->list, &bgcon->list);
 
     spin_unlock_irqrestore(&bgcon->lock, flags);
-
+    bg_tty_wakeup();
     return count;
 }
 
@@ -544,10 +533,6 @@ static struct tty_operations treecon_ops = {
     .write_room = bg_tty_write_room,
     .chars_in_buffer = bg_tty_chars_in_buffer,
     .unthrottle = bg_tty_unthrottle,
-#if 0
-    .put_char = bg_tty_put_char,
-    .flush_chars = bg_tty_flush_chars,
-#endif
 };
 
 static int __devinit of_read_uint_prop(struct device_node *np,
@@ -642,6 +627,14 @@ static int __devinit bgcon_probe(struct of_device *ofdev,
 
     bgcon->tty_driver = driver;
 
+    bg_tty_task = kthread_run(bg_tty_thread, NULL, "bg_tty_thread");
+    if(IS_ERR(bg_tty_task)) {
+	    mailbox_puts("kthread_run failed\n", 19);
+	    panic("Couldn't create kthread for bgtty console\n");
+	    put_tty_driver(driver);
+	    return -EIO;
+    }
+
     printk("Bgcon: registered %d ttys\n", bgcon->num_tty);
     return 0;
 
@@ -658,7 +651,7 @@ static int __devinit bgcon_remove(struct of_device *ofdev)
 {
     bg_tty_proc_unregister(&bg_console);
 
-    // to be done
+    // TODO: to be done
     return 0;
 }
 
@@ -685,6 +678,7 @@ static int __init bgcon_module_init (void)
 
 static void __exit bgcon_module_exit (void)
 {
+
     of_unregister_platform_driver(&bgcon_driver);
 }
 
@@ -824,6 +818,7 @@ static int bg_tty_proc_unregister(struct bg_console *bgcon)
 	unregister_sysctl_table(bgcon->sysctl_header);
 	bgcon->sysctl_header = NULL;
     }
+
     return 0;
 }
 #else
