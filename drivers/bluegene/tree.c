@@ -1571,34 +1571,31 @@ extern void mailbox_puts(const unsigned char *s, int count);
 
 void bluegene_tree_deactivate(void)
 {
-    int rt, c, i;
+    int c, i;
     u32 val;
     struct bg_tree *tree = bgtree_get_dev();
     struct bgtree_channel *chn;
     union bgtree_status status;
-    char buf[64];
 
+    //DS: Commenting this out since we are now draining the tree infinitely
+#if 0
     for (rt = 0; rt < 8; rt++) {
 	val = mfdcrx(0xc00 + _BGP_DCR_TR_CLASS + rt);
 	val &= ~(0x3 << 16 | 0x3);
 	mtdcrx(0xc00 + _BGP_DCR_TR_CLASS + rt, val);
     }
-
-    mailbox_puts("bluegene_tree_deactivate\n", 25);
-
-    for (c = 0; c < BGP_MAX_CHANNEL; c++) {
+#endif
+    while(1) {
+      for (c = 0; c < BGP_MAX_CHANNEL; c++) {
 	chn = &tree->chn[c];
 	status.raw = in_be32_nosync((unsigned*) (chn->mioaddr + _BGP_TRx_Sx));
-	snprintf(buf, sizeof(buf),
-		 "draining %d packet(s) from tree channel %d.\n",
-		 status.x.rcv_hdr, c);
-	mailbox_puts(buf, strlen(buf));
 	while (status.x.rcv_hdr > 0) {
-	    val = in_be32_nosync((unsigned*) (chn->mioaddr + _BGP_TRx_HR));
-	    for (i = 0; i < TREE_PAYLOAD; i += 16) {
-		asm("lfpdx 0,0,%0" :: "b" ((void*) chn->mioaddr + _BGP_TRx_DR));
-	    }
-	    status.x.rcv_hdr--;
+	  val = in_be32_nosync((unsigned*) (chn->mioaddr + _BGP_TRx_HR));
+	  for (i = 0; i < TREE_PAYLOAD; i += 16) {
+	    asm("lfpdx 0,0,%0" :: "b" ((void*) chn->mioaddr + _BGP_TRx_DR));
+	  }
+	  status.x.rcv_hdr--;
 	}
+      }
     }
 }
