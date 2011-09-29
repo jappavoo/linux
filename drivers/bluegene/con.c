@@ -393,8 +393,8 @@ static int bg_tty_thread(void *unused)
 		}
 
 		spin_unlock_irqrestore(&bgcon->lock, flags);
-		wait_event_interruptible_timeout(bg_tty_wq,
-						 bg_tty_kick != 0, HZ/10);
+		wait_event_interruptible(bg_tty_wq,
+						 bg_tty_kick != 0);
 		bg_tty_kick = 0;
 	} while (!kthread_should_stop());
 
