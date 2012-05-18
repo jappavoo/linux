@@ -17,6 +17,8 @@
 /* link layer protocol IDs */
 #define BGLINK_P_NET	0x01
 #define BGLINK_P_CON	0x10
+#define BGLINK_P_CTL    0x20
+#define BGLINK_P_SERIAL 0x40
 
 union link_proto_opt {
     u16 raw;
