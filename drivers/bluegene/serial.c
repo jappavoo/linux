@@ -247,6 +247,13 @@ bg_serial_tree_rcv_interrupt(struct sk_buff *skb, struct bglink_hdr_tree *lhdr)
   return 0;
 }
 
+int 
+bg_serial_tree_protocol_init(void)
+{
+  bglink_register_proto(&(bg_serial.bglink_proto));
+  return 0;
+}
+
 /*********************************/
 
 static unsigned int	
@@ -508,6 +515,7 @@ static int __init bg_serial_init(void)
 
   (void)bg_serial_proc_register(&(bg_serial.sysctl_header));
   
+  (void)bg_serial_tree_protocol_init();
 
   return rc;
 }
