@@ -60,7 +60,8 @@ static struct bg_serial {
   struct bglink_proto bglink_proto;
   spinlock_t lock;
   struct uart_port * portsPendingTransmit; /* list of pending ports */ 
-  
+  int sndcnt;
+  int rcvcnt;
 } bg_serial = {
   .portsPendingTransmit = NULL, 
   .uart_driver =  {
@@ -77,7 +78,9 @@ static struct bg_serial {
     .tree_rcv = bg_serial_tree_rcv_interrupt,
     .tree_flush = bg_serial_tree_xmit_interrupt,
     .torus_rcv = NULL
-  }
+  },
+  .sndcnt = 0,
+  .rcvcnt = 0
 };
 
 #if 0 // 
@@ -93,6 +96,31 @@ static void bug_print(char *str){
 #endif
 
 
+void 
+bg_serial_sndcnt_inc(int inc)
+{
+  bg_serial.sndcnt += inc;
+  return;
+}
+
+int
+bg_serial_sndcnt(void)
+{
+  return  bg_serial.sndcnt;
+}
+
+void 
+bg_serial_rcvcnt_inc(int inc)
+{
+  bg_serial.rcvcnt += inc;
+  return;
+}
+
+int
+bg_serial_rcvcnt(void)
+{
+  return bg_serial.rcvcnt;
+}
 
 static struct uart_port * bg_serial_getNextPending(struct uart_port *p) 
 {
@@ -345,7 +373,7 @@ static void
 bg_serial_set_termios(struct uart_port *p, struct ktermios *new,
 	    struct ktermios *old)
 {
-  printk("%s: %d\n",__func__,p->line);
+  printk("%s: %d\n",__func__,p->line);  
   /*
   set_termios(port,termios,oldtermios)
 	Change the port parameters, including word length, parity, stop
@@ -469,13 +497,11 @@ bg_serial_setup_ports(void)
 {
   int i;
   struct uart_port *port;
-  struct bg_serial_port_info *pinfo;
 
   printk("%s\n",__func__);
   memset(bg_serial.pinfo, 0, sizeof(bg_serial.pinfo));
   memset(bg_serial.ports, 0, sizeof(bg_serial.ports));
   for (i=0; i<BG_SERIAL_MAX_PORTS; i++) {
-    //pinfo = &(bg_serial.pinfo[i]);
     port = &(bg_serial.ports[i]);
     port->fifosize  = BG_SERIAL_FIFO_SIZE;
     port->iotype    = UPIO_MEM;

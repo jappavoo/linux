@@ -21,6 +21,7 @@ DEFINE_SPINLOCK(linkproto_lock);
 void bglink_register_proto(struct bglink_proto *proto)
 {
     spin_lock(&linkproto_lock);
+    if(proto->lnk_proto == BGLINK_P_SERIAL) printk("%s BGLINK_P_SERIAL registered\n", __func__);
     list_add_rcu(&proto->list, &linkproto_list);
     spin_unlock(&linkproto_lock);
 }
@@ -30,7 +31,6 @@ void bglink_unregister_proto(struct bglink_proto *proto)
     spin_lock(&linkproto_lock);
     list_del_rcu(&proto->list);
     spin_unlock(&linkproto_lock);
-
     synchronize_rcu();
 }
 

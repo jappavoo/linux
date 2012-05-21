@@ -66,6 +66,12 @@ extern void bgic_raise_irq(unsigned int hwirq);
 static int bgtree_proc_register(struct bg_tree *tree);
 static int bgtree_proc_unregister(struct bg_tree *tree);
 
+#if 1
+extern void bg_serial_sndcnt_inc(int );
+extern void bg_serial_rcvcnt_inc(int );
+extern int  bg_serial_sndcnt(void);
+extern int  bg_serial_rcvcnt(void);
+#endif
 
 /*
  * device management
@@ -472,6 +478,7 @@ static void bgtree_receive(struct bg_tree *tree, unsigned channel)
 	      lnkhdr.this_pkt, lnkhdr.total_pkt,
 	      lnkhdr.dst_key, lnkhdr.src_key);
 
+	if (lnkhdr.lnk_proto == BGLINK_P_SERIAL) bg_serial_rcvcnt_inc(1);
 	// early check if packet is valid
 	if (lnkhdr.total_pkt < 1 || lnkhdr.this_pkt >= lnkhdr.total_pkt) {
 	    drop = 1;
@@ -563,6 +570,7 @@ static void bgtree_receive(struct bg_tree *tree, unsigned channel)
 		// deliver to upper protocol layers
 		rcu_read_lock();
 		proto = bglink_find_proto(lnkhdr.lnk_proto);
+		if (lnkhdr.lnk_proto == BGLINK_P_SERIAL) bg_serial_rcvcnt_inc(1000);
 		if (proto && ((lnkhdr.src_key != tree->nodeid) ||
 			      proto->receive_from_self))
 		{
@@ -750,6 +758,7 @@ int __bgtree_xmit(struct bg_tree *tree, int chnidx, union bgtree_header dest,
 
 	    data += TREE_FRAGPAYLOAD;
 	    len -= TREE_FRAGPAYLOAD;
+            if (lnkhdr->lnk_proto == BGLINK_P_SERIAL) bg_serial_sndcnt_inc(1);
 
 	} else {
 	    // general case
@@ -849,9 +858,9 @@ static irqreturn_t bgtree_inject_interrupt(int irq, void *dev)
 	if (pend_irq & tree->inj_wm_mask & tree->chn[chn].irq_inj_pending_mask) {
 	    struct bglink_proto *proto;
 	    list_for_each_entry_rcu(proto, &linkproto_list, list)
-		if (proto->tree_flush)
-		    if ((rc = proto->tree_flush(chn)) != 0)
-			break;
+	      if (proto->tree_flush) 
+		if ((rc = proto->tree_flush(chn)) != 0)
+		  break;
 
 	    /* If we successfully flushed all packets, clear the high
 	     * watermark.  We are still holding tree->lock and thus no new
@@ -1206,6 +1215,9 @@ static int proc_do_status (ctl_table *ctl, int write, struct file * filp,
 		   tree->chn[0].delivered, tree->chn[1].delivered,
 		   tree->fragment_timeout);
 
+    len += sprintf(page + len, "bg_serial.sndcnt=%d bg_serial.rcvcnt=%d\n", 
+		   bg_serial_sndcnt(), bg_serial_rcvcnt());
+
     spin_unlock_irqrestore(&tree->lock, flags);
 
     len -= *ppos;
@@ -1455,7 +1467,7 @@ static int proc_do_mcast_filter(ctl_table *ctl, int write, struct file *filp,
 	    len += 17;
 
 	    for (j = 0; j < MCAST_TARGET_MAX; j++) {
-		if (tree->mcast_table[i].target[j] != -1) {
+ 		if (tree->mcast_table[i].target[j] != -1) {
 		    snprintf(space + len, 19, " 02:00:%02X:%02X:%02X:%02X",
 			     (tree->mcast_table[i].target[j] >> 24) & 0xff,
 			     (tree->mcast_table[i].target[j] >> 16) & 0xff,
