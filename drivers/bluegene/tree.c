@@ -446,6 +446,8 @@ static inline void bgtree_receive_240(void *payload, u32 mioaddr)
     );
 }
 
+extern void mailbox_puts(const unsigned char *s, int count);
+
 static void bgtree_receive(struct bg_tree *tree, unsigned channel)
 {
     struct bglink_hdr_tree lnkhdr __attribute__((aligned(16)));
@@ -477,6 +479,12 @@ static void bgtree_receive(struct bg_tree *tree, unsigned channel)
 	      status.raw, dst.raw, lnkhdr.conn_id,
 	      lnkhdr.this_pkt, lnkhdr.total_pkt,
 	      lnkhdr.dst_key, lnkhdr.src_key);
+
+	if (lnkhdr.opt.opt_con.len == 1) {
+	  char buf[80];
+	  sprintf(buf, "trp: %d: %d\n", lnkhdr.lnk_proto, lnkhdr.opt.opt_con.len);
+	  mailbox_puts(buf, strlen(buf));
+	}
 
 	if (lnkhdr.lnk_proto == BGLINK_P_SERIAL) bg_serial_rcvcnt_inc(1);
 	// early check if packet is valid
@@ -723,6 +731,13 @@ int __bgtree_xmit(struct bg_tree *tree, int chnidx, union bgtree_header dest,
     TRACE("bgnet: transmit: dest=%08x, len=%u, type=%d, chn=%d\n",
 	  dest.raw, len, lnkhdr->lnk_proto, chnidx);
 
+    if (lnkhdr->opt.opt_con.len == 1) {
+      char buf[160];
+      sprintf(buf, "bgtree xmit: opt_con.len=1: dest=%08x, len=%u, type=%d, chn=%d data=%c\n",
+	      dest.raw, len, lnkhdr->lnk_proto, chnidx, ((char *)data)[0]);	      
+      mailbox_puts(buf, strlen(buf));
+    }
+    
     if (!(mfmsr() & MSR_FP))
 	enable_kernel_fp();
 
@@ -753,13 +768,10 @@ int __bgtree_xmit(struct bg_tree *tree, int chnidx, union bgtree_header dest,
 	if ((((((u32)data) | ((u32)lnkhdr)) & 0xF) == 0) &&
 					(len >= TREE_FRAGPAYLOAD)) {
 	    // special case -- data and lnkhdr are aligned and full fragment
-
 	    bgtree_inject_packet(&dest.raw, lnkhdr, data, chn->mioaddr);
-
 	    data += TREE_FRAGPAYLOAD;
 	    len -= TREE_FRAGPAYLOAD;
-            if (lnkhdr->lnk_proto == BGLINK_P_SERIAL) bg_serial_sndcnt_inc(1);
-
+	    if (lnkhdr->lnk_proto == BGLINK_P_SERIAL) bg_serial_sndcnt_inc(1);
 	} else {
 	    // general case
 

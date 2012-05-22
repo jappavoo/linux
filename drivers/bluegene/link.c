@@ -18,10 +18,15 @@
 LIST_HEAD(linkproto_list);
 DEFINE_SPINLOCK(linkproto_lock);
 
+extern void mailbox_puts(const unsigned char *s, int count);
+
 void bglink_register_proto(struct bglink_proto *proto)
 {
     spin_lock(&linkproto_lock);
-    if(proto->lnk_proto == BGLINK_P_SERIAL) printk("%s BGLINK_P_SERIAL registered\n", __func__);
+    if(proto->lnk_proto == BGLINK_P_SERIAL) {
+      mailbox_puts("bglink_register_proto: BGLINK_P_SERIAL\n", 39);  
+      printk("%s BGLINK_P_SERIAL registered\n", __func__);
+    }
     list_add_rcu(&proto->list, &linkproto_list);
     spin_unlock(&linkproto_lock);
 }

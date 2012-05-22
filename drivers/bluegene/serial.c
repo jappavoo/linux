@@ -24,15 +24,18 @@
 #define BG_SERIAL_PORT_TYPE 77
 
 #define BG_SERIAL_TYPE "bg_serial"
-#define BG_SERIAL_MAX_PORTS 256
+#define BG_SERIAL_MAX_PORTS 10 //256
 #define BG_SERIAL_TREE_CHANNEL 0
+#define BG_SERIAL_TREE_ROUTE 0xF
 #define BG_SERIAL_FIF0_SIZE 240
 // stealing IBM 3270 terminal UNIX tty access
 #define BG_SERIAL_MAJOR 227
 
-#define TREE_HDR_BROADCAST	((union bgtree_header){ bcast: { p2p: 0 }})
-#define TREE_HDR_P2P(v)		((union bgtree_header){ p2p: { p2p: 1, \
-							       vector: v }})
+#if 0
+#define TREE_HDR_BROADCAST	((union bgtree_header){ bcast: { pclass: BG_SERIAL_TREE_ROUTE, p2p: 0 }})
+#define TREE_HDR_P2P(v)		((union bgtree_header){ p2p: { pclass: BG_SERIAL_TREE_ROUTE, p2p: 1, \
+ 						       vector: v }})
+#endif
 
 int bg_serial_tree_rcv_interrupt(struct sk_buff *skb, struct bglink_hdr_tree *lhdr);
 static int bg_serial_tree_xmit_interrupt(int chn);
@@ -357,7 +360,7 @@ static int
 bg_serial_startup(struct uart_port *p)
 {
   /* do port setup here */
-  printk("%s: %d\n",__func__, p->line);
+  //  printk("%s: %d\n",__func__, p->line);
   return 0;
 }
 
@@ -428,7 +431,7 @@ bg_serial_set_termios(struct uart_port *p, struct ktermios *new,
 static const char *
 bg_serial_type(struct uart_port *p)
 {
-  printk("%s: %d\n",__func__,p->line);
+  //  printk("%s: %d\n",__func__,p->line);
   return p->type == BG_SERIAL_PORT_TYPE ? BG_SERIAL_TYPE : NULL;
 }
 
@@ -450,14 +453,14 @@ bg_serial_release_port(struct uart_port *p)
 static int		
 bg_serial_request_port(struct uart_port *p)
 {
-  printk("%s: %d\n",__func__,p->line);
+  //  printk("%s: %d\n",__func__,p->line);
   return 0;
 }
 
 static void
 bg_serial_config_port(struct uart_port *p, int flags)
 {
-  printk("%s: %d\n",__func__,p->line);
+  //  printk("%s: %d\n",__func__,p->line);
   if (bg_serial_request_port(p)==0)  p->type = BG_SERIAL_PORT_TYPE;
   return;
 }
@@ -497,11 +500,20 @@ bg_serial_setup_ports(void)
 {
   int i;
   struct uart_port *port;
+  struct bg_serial_port_info *pi; 
 
   printk("%s\n",__func__);
   memset(bg_serial.pinfo, 0, sizeof(bg_serial.pinfo));
   memset(bg_serial.ports, 0, sizeof(bg_serial.ports));
   for (i=0; i<BG_SERIAL_MAX_PORTS; i++) {
+    pi = &(bg_serial.pinfo[i]);
+    pi->route.send_id = i;
+    pi->route.receive_id = i;
+    
+    // we assume pinfo has been written to zero
+    // since we are in broadcast, no further updates needed
+    pi->route.dest.bcast.pclass = BG_SERIAL_TREE_ROUTE;
+
     port = &(bg_serial.ports[i]);
     port->fifosize  = BG_SERIAL_FIFO_SIZE;
     port->iotype    = UPIO_MEM;
@@ -517,6 +529,7 @@ bg_serial_setup_ports(void)
   return 0;
 }
 
+extern void mailbox_puts(const unsigned char *s, int count);
 
 static int bg_serial_proc_register(struct ctl_table_header **sysctl_header);
 static int bg_serial_proc_unregister(struct ctl_table_header **sysctl_header);
@@ -540,7 +553,8 @@ static int __init bg_serial_init(void)
   if (rc) uart_unregister_driver(&bg_serial.uart_driver);
 
   (void)bg_serial_proc_register(&(bg_serial.sysctl_header));
-  
+
+  mailbox_puts("bg_serial_init: before proto init call\n", 40);  
   (void)bg_serial_tree_protocol_init();
 
   return rc;
@@ -610,8 +624,18 @@ static int proc_do_bg_serial (ctl_table *ctl, int write, struct file * filp,
 	    }
 	    info->route.send_id = val[0];
 	    info->route.receive_id = val[1];
-	    info->route.dest = (val[2] == -1) ?
-		TREE_HDR_BROADCAST : TREE_HDR_P2P(val[2]);
+	
+	    if (val[2] == -1){
+	      info->route.dest.bcast.pclass = BG_SERIAL_TREE_ROUTE;
+	      info->route.dest.bcast.p2p = 0;
+	    }
+	    else{
+	      info->route.dest.p2p.pclass = BG_SERIAL_TREE_ROUTE;
+	      info->route.dest.p2p.p2p = 1;
+	      info->route.dest.p2p.vector = val[2];
+  
+	    }
+	       
 	}
     } else {
 	len = sprintf(page, "%d %d ", info->route.send_id,
