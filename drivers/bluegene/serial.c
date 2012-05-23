@@ -24,18 +24,14 @@
 #define BG_SERIAL_PORT_TYPE 77
 
 #define BG_SERIAL_TYPE "bg_serial"
-#define BG_SERIAL_MAX_PORTS 10 //256
+#define BG_SERIAL_MAX_PORT 0xFF
 #define BG_SERIAL_TREE_CHANNEL 0
 #define BG_SERIAL_TREE_ROUTE 0xF
 #define BG_SERIAL_FIF0_SIZE 240
 // stealing IBM 3270 terminal UNIX tty access
 #define BG_SERIAL_MAJOR 227
 
-#if 0
-#define TREE_HDR_BROADCAST	((union bgtree_header){ bcast: { pclass: BG_SERIAL_TREE_ROUTE, p2p: 0 }})
-#define TREE_HDR_P2P(v)		((union bgtree_header){ p2p: { pclass: BG_SERIAL_TREE_ROUTE, p2p: 1, \
- 						       vector: v }})
-#endif
+extern void mailbox_puts(const unsigned char *s, int count);
 
 int bg_serial_tree_rcv_interrupt(struct sk_buff *skb, struct bglink_hdr_tree *lhdr);
 static int bg_serial_tree_xmit_interrupt(int chn);
@@ -56,8 +52,9 @@ struct bg_serial_port_info {
 static struct bg_serial {
   struct uart_driver uart_driver;
   
-  struct bg_serial_port_info pinfo[BG_SERIAL_MAX_PORTS];
-  struct uart_port  ports[BG_SERIAL_MAX_PORTS];  
+  struct bg_serial_port_info pinfo[BG_SERIAL_MAX_PORT+1];
+  struct bg_serial_port_info *openports[BG_SERIAL_MAX_PORT+1];
+  struct uart_port  ports[BG_SERIAL_MAX_PORT+1];  
   struct ctl_table_header *sysctl_header;
   struct bg_tree *bg_tree;
   struct bglink_proto bglink_proto;
@@ -73,7 +70,7 @@ static struct bg_serial {
     .dev_name    = "bgttyS",
     .major       = BG_SERIAL_MAJOR,
     .minor       = 0,
-    .nr          = BG_SERIAL_MAX_PORTS
+    .nr          = BG_SERIAL_MAX_PORT + 1
   },
   .bglink_proto =  {
     .lnk_proto = BGLINK_P_SERIAL,
@@ -267,14 +264,69 @@ bg_serial_tree_xmit_interrupt(int chn)
   return 1; 
 }
 
+struct uart_port *
+bg_serial_find_openport(u32 destkey)
+{
+  struct bg_serial_port_info *pinfo;
+  int hk = destkey & BG_SERIAL_MAX_PORT;
+  int i;
+
+  /* attempt to write char to connected ttys */
+  pinfo = bg_serial.openports[hk];
+
+  if (pinfo == NULL) return NULL;
+  
+  if (pinfo->route.receive_id == destkey) return &(bg_serial.ports[ pinfo - bg_serial.pinfo ]);
+ 
+  for(i=0; i<=BG_SERIAL_MAX_PORT; i++) {
+    pinfo = &(bg_serial.pinfo[i]);
+    if (pinfo->route.receive_id == destkey) {  
+      bg_serial.openports[hk] = pinfo;
+      return &(bg_serial.ports[i]);
+    }
+  }
+
+  {
+    char buf[160];
+    sprintf(buf, "ERROR: %s: no open port found for destkey=%x\n",
+	    __func__, destkey);
+    mailbox_puts(buf, strlen(buf));
+    printk(buf);
+  }
+  return NULL;
+}
+
+
 int
 bg_serial_tree_rcv_interrupt(struct sk_buff *skb, struct bglink_hdr_tree *lhdr)
 {
-  char c = (skb->len && skb->data) ? skb->data[0] : '-';
+  struct uart_port *p;
+  int len; 
+  
+  // HOT-PATH: We expect that we will often times be having to process
+  // serial data that is either not destined for one of our ttys or that
+  // our tty that it is destined for is not open
+  if ((p = bg_serial_find_openport(lhdr->dst_key)) == NULL) {
+    dev_kfree_skb(skb); 
+    return 0;
+  }
 
-  printk("%s: lhdr.optlen=%d skb->len=%d skb->data[0]=%c\n",__func__,
-	 lhdr->opt.opt_con.len, skb->len, c);
+  // looks like we actually have a tty for whom the data should be delivered
+  // too
+  len = lhdr->opt.opt_con.len; 
+  skb_trim(skb, len);
+  
+  if (p->info && p->info->tty) {
+    if (p->info->tty->count == 0) printk("yikes tty->count == 0\n");
+    len = tty_insert_flip_string(p->info->tty, skb->data, skb->len);
+    BUG_ON(len==skb->len);
+  } else {
+    printk("BG_SERIAL: tty not open? info=%p tty=%p\n", p->info,
+	   (p->info) ? p->info->tty : NULL);
+  }
+  tty_flip_buffer_push(p->info->tty);
 
+  dev_kfree_skb(skb);
   return 0;
 }
 
@@ -505,7 +557,9 @@ bg_serial_setup_ports(void)
   printk("%s\n",__func__);
   memset(bg_serial.pinfo, 0, sizeof(bg_serial.pinfo));
   memset(bg_serial.ports, 0, sizeof(bg_serial.ports));
-  for (i=0; i<BG_SERIAL_MAX_PORTS; i++) {
+  memset(bg_serial.openports, 0, sizeof(bg_serial.openports));
+
+  for (i=0; i<=BG_SERIAL_MAX_PORT; i++) {
     pi = &(bg_serial.pinfo[i]);
     pi->route.send_id = i;
     pi->route.receive_id = i;
@@ -528,8 +582,6 @@ bg_serial_setup_ports(void)
   }
   return 0;
 }
-
-extern void mailbox_puts(const unsigned char *s, int count);
 
 static int bg_serial_proc_register(struct ctl_table_header **sysctl_header);
 static int bg_serial_proc_unregister(struct ctl_table_header **sysctl_header);
@@ -586,7 +638,7 @@ static int proc_do_bg_serial (ctl_table *ctl, int write, struct file * filp,
     int idx = (int)ctl->extra2;
     int len, rc = 0, validx;
 
-    BUG_ON(!info || idx < 0 || idx >= BG_SERIAL_MAX_PORTS);
+    BUG_ON(!info || idx < 0 || idx >= BG_SERIAL_MAX_PORT);
 
     if (!page)
 	return -ENOMEM;
@@ -689,13 +741,13 @@ static int bg_serial_proc_register(struct ctl_table_header **sysctl_header)
     struct ctl_table *ent;
 
     ent = (struct ctl_table*)kzalloc(sizeof(struct ctl_table) *
-				     (BG_SERIAL_MAX_PORTS + 1), GFP_KERNEL);
+				     (BG_SERIAL_MAX_PORT + 2), GFP_KERNEL);
     if (!ent)
 	return -ENOMEM;
 
     bg_serial_root[0].child = ent;
 
-    for (idx = 0; idx < BG_SERIAL_MAX_PORTS; idx++)
+    for (idx = 0; idx <= BG_SERIAL_MAX_PORT; idx++)
     {
 	ent[idx].ctl_name = CTL_UNNUMBERED;
 	ent[idx].procname = kmalloc(5, GFP_KERNEL);
