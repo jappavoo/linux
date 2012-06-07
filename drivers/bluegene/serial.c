@@ -43,11 +43,35 @@ struct bg_serial_route {
   int count;
 };
 
+//#define VERBOSE
+#define DEBUG 
+#define MAILBOX
+
+#ifdef VERBOSE
+#define VERBOSE_PRINTK(...) printk(__VA_ARGS__)
+#else
+#define VERBOSE_PRINTK(...)
+#endif
+
+#ifdef  DEBUG
+#define DEBUG_PRINTK(...) printk(__VA_ARGS__)
+#else
+#define DEBUG_PRINTK(...)
+#endif
+
+#ifdef MAILBOX
+#define MAILBOX_PRINTK(...) mailbox_puts(__VA_ARGS__)
+#else
+#define MAILBOX_PRINTK(...)
+#endif 
+
+
 #define BG_SERIAL_FIFO_SIZE (TREE_PAYLOAD - sizeof(struct bglink_hdr_tree))
 
 struct bg_serial_port_info {
   struct bg_serial_route route;
   struct bg_serial_port_info *next;
+  int opencnt;
 };
 
 static struct bg_serial {
@@ -60,11 +84,17 @@ static struct bg_serial {
   struct bg_tree *bg_tree;
   struct bglink_proto bglink_proto;
   spinlock_t lock;
-  struct uart_port * portsPendingTransmit; /* list of pending ports */ 
+  struct pending {
+    struct uart_port *head;
+    struct uart_port *tail;
+  } pending; /* list of pending ports */ 
   int sndcnt;
   int rcvcnt;
 } bg_serial = {
-  .portsPendingTransmit = NULL, 
+  .pending = { 
+    .head = NULL, 
+    .tail = NULL
+  }, 
   .uart_driver =  {
     .owner = THIS_MODULE,
     .driver_name = "bg_serial",
@@ -87,23 +117,21 @@ static struct bg_serial {
   .rcvcnt = 0
 };
 
-#if 0 // 
-static void bug_print(char *str){
-  struct tty_struct *my_tty;
-  my_tty = current->signal->tty;
-  // assert we have a valid tty
-  BUG_ON(my_tty == NULL);
-  //  
-  ((my_tty->driver)->write) (my_tty, str, strlen(str));	
-  ((my_tty->driver)->write) (my_tty, 0, "\015\012", 2);
-}
-#endif
-
 
 void 
 bg_serial_sndcnt_inc(int inc)
 {
+  int flags;
+  char buf[160];
+  spin_lock_irqsave(&(bg_serial.lock), flags); 
+  printk("! %s: inc:%d sndcnt:%d",__func__,inc, bg_serial.sndcnt);
   bg_serial.sndcnt += inc;
+ 
+  sprintf(buf, "%s: sndcnt=%d\n", __func__, bg_serial.sndcnt);
+  printk(buf);
+  MAILBOX_PRINTK(buf, strlen(buf));
+  printk("!! %s: inc:%d sndcnt:%d",__func__,inc, bg_serial.sndcnt);
+  spin_unlock_irqrestore(&(bg_serial.lock), flags); 
   return;
 }
 
@@ -113,10 +141,30 @@ bg_serial_sndcnt(void)
   return  bg_serial.sndcnt;
 }
 
+extern void bgtree_receive_interrupt_skip_toggle(void);
+
 void 
 bg_serial_rcvcnt_inc(int inc)
 {
+  int flags;
+  char buf[160];
+  //  volatile int i;
+  spin_lock_irqsave(&(bg_serial.lock), flags);
+  printk("! %s: inc:%d rcvcnt:%d\n",__func__,inc, bg_serial.rcvcnt);
   bg_serial.rcvcnt += inc;
+  sprintf(buf, "%s: rcvcnt={%d}\n", __func__, bg_serial.rcvcnt);
+  MAILBOX_PRINTK(buf, strlen(buf));
+  printk("!! %s: inc:%d rcvcnt:%d\n",__func__,inc, bg_serial.rcvcnt);
+  /*
+  if (bg_serial.rcvcnt == 4096) {
+    bgtree_receive_interrupt_skip_toggle();
+    mailbox_puts("PAUSED: TREE RCV\n",17);
+    for (i=0; i<10000000; i++);
+    bgtree_receive_interrupt_skip_toggle();
+    mailbox_puts("STARTED: TREE RCV\n",18);
+  }
+  */
+  spin_unlock_irqrestore(&(bg_serial.lock), flags);
   return;
 }
 
@@ -136,31 +184,31 @@ static void bg_serial_setNextPending(struct uart_port *p, struct uart_port *n)
   p->private_data = n;
 }
 
-// Add p to the enof the pendinglist
+// Add list pointed to by p to  the end of the pendinglist assumes last link of
+// assumes last link on p has a next pointer of NULL
 static void bg_serial_addPending(struct uart_port *p) 
 {
   int flags;
 
-  bg_serial_setNextPending(p, NULL);
-
   spin_lock_irqsave(&(bg_serial.lock), flags);
-  if (bg_serial.portsPendingTransmit == NULL) bg_serial.portsPendingTransmit = p;
-  else {
-    struct uart_port *t;
-    for (t = bg_serial.portsPendingTransmit; 
-         bg_serial_getNextPending(t) != NULL;
-         t = bg_serial_getNextPending(t)); 
-    bg_serial_setNextPending(t,p);
-  }
+
+    if (bg_serial.pending.head == NULL) {
+      bg_serial.pending.head = bg_serial.pending.tail = p;
+    } else {
+      bg_serial_setNextPending(bg_serial.pending.tail, p);
+    }
+    while (bg_serial_getNextPending(bg_serial.pending.tail) != NULL) {
+      bg_serial.pending.tail = bg_serial_getNextPending(bg_serial.pending.tail);
+    }
+
   spin_unlock_irqrestore(&(bg_serial.lock), flags);
+
   // enable watermark interrupt and exit 
   bgtree_enable_inj_wm_interrupt(bg_serial.bg_tree, BG_SERIAL_TREE_CHANNEL);
 }
 
 // reflecting return code of bgtree_xmit < 0 is error
-static int 
-
-_bg_serial_transmit(struct bg_serial_port_info *pi, char *s, int len)
+static int _bg_serial_transmit(struct bg_serial_port_info *pi, char *s, int len)
 {
   struct bglink_hdr_tree lnkhdr  __attribute__((aligned(16)));
   char fifo[BG_SERIAL_FIFO_SIZE]  __attribute__((aligned(16)));
@@ -171,21 +219,25 @@ _bg_serial_transmit(struct bg_serial_port_info *pi, char *s, int len)
   bgtree_link_hdr_init(&lnkhdr);
   lnkhdr.opt.opt_con.len = len;
   memcpy(fifo, s, len);
-
+  
   rc =  bgtree_xmit(bg_serial.bg_tree, BG_SERIAL_TREE_CHANNEL, pi->route.dest,
 		    &lnkhdr, fifo, BG_SERIAL_FIF0_SIZE);
+ 
   return rc;
 }
 
-static int bg_serial_transmit(struct uart_port *port )
+/* returns 1 on success, 0 on failure - no data sent,  -1 on failure - partial data sent */
+/* LOCKING: should be called with port lock acquired */
+static int bg_serial_transmit(struct uart_port *port)
 {
-  struct circ_buf *xmit  = &port->info->xmit;
+  struct circ_buf *xmit  = &port->info->xmit; 
   struct bg_serial_port_info *pi = &(bg_serial.pinfo[port->line]);
-  unsigned int len;
-  unsigned int pending, t_pend, r_pend;
-
+  unsigned int t,r,l; 
+  char buf[160];
+  
   /* xon/xoff char */
   if (port->x_char) {
+    BUG_ON(1);
     // handle xon/xoff software flow control as a high priority
     // single transmission
     if (_bg_serial_transmit(pi, &(port->x_char),1) < 0) {
@@ -194,85 +246,132 @@ static int bg_serial_transmit(struct uart_port *port )
       // when the tree fifo has room.  We don't need to disable it as this is handled
       // automatically by the link code given that there maybe multiple protocols
       // using the tree.
-      // either we are in an interrupt or are being called with port locked 
-      /* return 0: no data sent */
       return 0;
     } else {
       port->x_char = 0;
       port->icount.tx++;
-      /* return size sent */
       return 1;
     }
   } /* end of (port->x_char) */
 
   // return if uart is empty or stopped 
-  if (uart_circ_empty(xmit) || uart_tx_stopped(port))
+  if (uart_circ_empty(xmit) || uart_tx_stopped(port)){
+    DEBUG_PRINTK("%s error: uart is empty or stopped \n",__func__);
     return 0;
-
-  pending = uart_circ_chars_pending(xmit);
-
-  printk("%s: pending %d\n",__func__,pending);
-
-  for(t_pend = 0; t_pend<pending; t_pend+=BG_SERIAL_FIFO_SIZE)
-  {
-    len = (pending < BG_SERIAL_FIFO_SIZE) ? pending : BG_SERIAL_FIFO_SIZE;
-    printk("%s: t_pend %d; len %d; \n",__func__,t_pend, len);
-    
-    if (_bg_serial_transmit(pi, &(xmit->buf[xmit->tail]), len) < 0)  {
-      /* return amount of data remaining to be sent */
-      r_pend = pending - t_pend;
-      xmit->tail = (xmit->tail + r_pend) & (UART_XMIT_SIZE - 1);
-      port->icount.tx += r_pend;
-      printk("%s: r_pend %d; len %d; \n",__func__,r_pend, len);
-      return ((r_pend)*-1);
-    } 
   }
-  /* if send was successful, update tty queue and loop of nessessary */ 
-  xmit->tail = (xmit->tail + pending) & (UART_XMIT_SIZE - 1);
-  port->icount.tx += pending;
+
+  r = t = uart_circ_chars_pending(xmit);
+  // continue sending blocks of FIFO_SIZE until there is nothing left to send
+  while (r > 0) {
+    l = (r < BG_SERIAL_FIFO_SIZE) ? r : BG_SERIAL_FIFO_SIZE;    
+    if (_bg_serial_transmit(pi, &(xmit->buf[xmit->tail]), l) < 0)  {
+      DEBUG_PRINTK("%s transmit failed;  attempted:%d remaining:%d \n",__func__,t,r);
+      sprintf(buf, "%s: transmit failed:  attemted:%d sndcnt:%d \n", __func__, bg_serial.sndcnt, bg_serial.sndcnt);
+      MAILBOX_PRINTK(buf, strlen(buf));
+      // update xmit buffer for partial sends
+      if(t-r){
+	xmit->tail = (xmit->tail + (t-r)) & (UART_XMIT_SIZE - 1);
+	port->icount.tx += (t-r);
+	bg_serial_sndcnt_inc(t-r);
+	return -1;
+      }
+      return 0; 
+    } 
+    DEBUG_PRINTK("%s sent=%d sndcnt=%d \n",__func__, l, bg_serial.sndcnt);
+    sprintf(buf, "%s: sent=%d sndcnt=%d \n", __func__, l, bg_serial.sndcnt );
+    MAILBOX_PRINTK(buf, strlen(buf));
+
+    r -= l;
+  }
+  /* if send of all pending data worked then updated based on t */
+  xmit->tail = (xmit->tail + t) & (UART_XMIT_SIZE - 1);
+  port->icount.tx += t;
+  bg_serial_sndcnt_inc(t);
 
   /* wake up after send */
-  //TODO: verify these lines are correct
+  /* number of characters left in xmit buffer is less than WAKEUP_CHARS then we ask for more */
   if (uart_circ_chars_pending(xmit) < WAKEUP_CHARS) uart_write_wakeup(port);
-
+    DEBUG_PRINTK("%s sent successful tot=%d rem=%d sndcnt=%d \n",__func__,t, r, bg_serial.sndcnt);
   return 1;
 }
 
 static int 
 bg_serial_tree_xmit_interrupt(int chn)
 {
-  struct uart_port *new_list, *helper;
-  int sent, flags;
-  if( bg_serial.portsPendingTransmit == NULL )
-      return 0;
+  struct uart_port *p,*t, *tail;
+  int flags, rc;
+  char buf[160];
+  
+  sprintf(buf, "%s: sndcnt=%d chn=%d\n", __func__, bg_serial.sndcnt, chn );
+  MAILBOX_PRINTK(buf, strlen(buf));
+  DEBUG_PRINTK("%s sndcnt=%d chn=%d \n",__func__, bg_serial.sndcnt, chn );
   
   /* lock and swap full list for empty */  
   spin_lock_irqsave(&(bg_serial.lock), flags); 
-  new_list = bg_serial.portsPendingTransmit;
-  bg_serial.portsPendingTransmit = NULL;
+  
+  /* unlock & return if there is nothing to send */
+  if( bg_serial.pending.head == NULL ) {
+  sprintf(buf, "%s: NOTHING TO SEND sndcnt=%d chn=%d\n", __func__, bg_serial.sndcnt, chn );
+  MAILBOX_PRINTK(buf, strlen(buf));
+  DEBUG_PRINTK("%s NOTHING TO SEND chn=%d \n",__func__, chn);
+
+      spin_unlock_irqrestore(&(bg_serial.lock), flags);
+      return 0;
+  }
+  p = bg_serial.pending.head;
+  tail = bg_serial.pending.tail;
+  bg_serial.pending.head = NULL;
+  bg_serial.pending.tail = NULL;
+  
   spin_unlock_irqrestore(&(bg_serial.lock), flags);
 
-  while (new_list != NULL){
-    if( (sent = bg_serial_transmit(new_list)) >  0 ){
-      /* pop item from list */
-      helper = new_list;
-      new_list = (struct uart_port *)new_list->private_data; 
-        /* if partial send, add remaning items to end of list */
-        bg_serial_addPending(new_list); 
-        /* partial send goes to very end of list */
-        if(sent < 0) bg_serial_addPending(helper); 
-          new_list = NULL;//exit loop
-    
-    }else
-      new_list = (struct uart_port *)new_list->private_data; 
+  // walk ports that were on the pending list
+  // and attempt to drain them
+  while (p != NULL) { 
+    spin_lock_irqsave(&(p->lock),flags);
+      rc = bg_serial_transmit(p);
+      if (rc == 1) {
+	// sucessfully send p's data
+	t = p;
+        p = bg_serial_getNextPending(p);
+        bg_serial_setNextPending(t, NULL);
+      } else { /* partial or no data sent */
+        spin_unlock_irqrestore(&(p->lock),flags);
+        break;
+      }
+    spin_unlock_irqrestore(&(p->lock),flags);
   }
-  return 1; 
+
+  /* if we break loop while there are still ports waiting*/
+  if (p) {
+    spin_lock_irqsave(&(bg_serial.lock), flags);
+    // restructure pending list
+    t = bg_serial.pending.head;
+    bg_serial.pending.head = p;
+    bg_serial_setNextPending(tail, t);
+    if (bg_serial.pending.tail == NULL) {
+        bg_serial.pending.tail = tail;
+    }
+  sprintf(buf, "%s: FAILED TO SEND ALL DATA sndcnt=%d chn=%d\n", __func__, bg_serial.sndcnt, chn );
+  MAILBOX_PRINTK(buf, strlen(buf));
+  DEBUG_PRINTK("%s FAILED TO SEND ALL DATA chn=%d \n",__func__, chn);
+
+    spin_unlock_irqrestore(&(bg_serial.lock), flags);
+    return 1; /* unable to empty queue */
+  }
+
+  sprintf(buf, "%s: SUCCESS sndcnt=%d chn=%d\n", __func__, bg_serial.sndcnt, chn );
+  MAILBOX_PRINTK(buf, strlen(buf));
+  DEBUG_PRINTK("%s SUCCESS chn=%d \n",__func__, chn);
+
+  return 0; 
 }
 
 struct uart_port *
 bg_serial_find_openport(u32 destkey)
 {
   struct bg_serial_port_info *pinfo;
+  /* create a hash of our destkey */
   int hk = destkey & BG_SERIAL_MAX_PORT;
 
   /* attempt to write char to connected ttys */
@@ -280,7 +379,6 @@ bg_serial_find_openport(u32 destkey)
 
   if (pinfo == NULL) return NULL;
   
-  printk("%s: pinfo=%p\n",__func__, pinfo);
   for (;pinfo!=NULL;pinfo = pinfo->next) {
     if (pinfo->route.receive_id == destkey) 
       return &(bg_serial.ports[ pinfo - bg_serial.pinfo ]);
@@ -299,15 +397,18 @@ bg_serial_find_openport(u32 destkey)
 
 
 int
+
 bg_serial_tree_rcv_interrupt(struct sk_buff *skb, struct bglink_hdr_tree *lhdr)
 {
   struct uart_port *p;
   int len; 
+  char buf[160];
   
   // HOT-PATH: We expect that we will often times be having to process
   // serial data that is either not destined for one of our ttys or that
   // our tty that it is destined for is not open
   if ((p = bg_serial_find_openport(lhdr->dst_key)) == NULL) {
+#if 0
     int i;
     printk("%s: dropping data: dst_key=%08x(%d) src_key=%08x(%d) %d\n",
 	   __func__, 
@@ -319,29 +420,33 @@ bg_serial_tree_rcv_interrupt(struct sk_buff *skb, struct bglink_hdr_tree *lhdr)
       if (i % 16 == 0) printk("\n");
     }
     printk("\n");
-
+#endif
     dev_kfree_skb(skb); 
     return 0;
   }
 
   // looks like we actually have a tty for whom the data should be delivered
   // too
+  BUG_ON(!p->info || !p->info->tty || p->info->tty->count == 0);
+
   len = lhdr->opt.opt_con.len; 
-  skb_trim(skb, len);
-  
-  if (p->info && p->info->tty) {
-    if (p->info->tty->count == 0) printk("yikes tty->count == 0\n");
-    len = tty_insert_flip_string(p->info->tty, skb->data, skb->len);
-    BUG_ON(len != skb->len);
-  } else {
-    printk("BG_SERIAL: tty not open? info=%p tty=%p\n", p->info,
-	   (p->info) ? p->info->tty : NULL);
-    dev_kfree_skb(skb);
-    return 0;
-  }
+  skb_trim(skb, len);  
+  //  bg_serial_rcvcnt_inc(len);
+
+  DEBUG_PRINTK("%s recived len=%d, trim(skb->len)=%d rcvcnt=%d \n",__func__, len, skb->len, bg_serial.rcvcnt);  
+
+  len = tty_insert_flip_string(p->info->tty, skb->data, skb->len);
+  sprintf(buf, "%s: TTY READ bs:%d COUNT:%d FLAGS: %lX \n", __func__, len, p->info->tty->count,  p->info->tty->flags);
+  mailbox_puts(buf, strlen(buf));
+  bg_serial_rcvcnt_inc(len);
+
+  if(lhdr->opt.opt_con.len != len)
+      DEBUG_PRINTK("%s Incorrect data amount sent  len_orig=%d, len_tty=%d \n",__func__, lhdr->opt.opt_con.len, len);  
 
   tty_flip_buffer_push(p->info->tty);
   dev_kfree_skb(skb);
+  
+
   return 0;
 }
 
@@ -360,7 +465,7 @@ bg_serial_tx_empty(struct uart_port *p)
   unsigned long flags;
   unsigned int rc;
 
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
 
   spin_lock_irqsave(&(p->lock), flags);
   //  do soemthing here
@@ -374,51 +479,55 @@ static void
 bg_serial_set_mctrl(struct uart_port *p, unsigned int mctrl)
 {
   // WE DON'T SUPPORT CHANGES 
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
   return;
 }
 
 static unsigned int 
 bg_serial_get_mctrl(struct uart_port *p) 
 {
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
   return TIOCM_CTS | TIOCM_DSR | TIOCM_CAR;
 }
 
 static void 
 bg_serial_stop_tx(struct uart_port *p)
 {
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
   return;
 }
 
 static void 
 bg_serial_start_tx(struct uart_port *p)
 {
-  printk("trace: %s \n",__func__);
-  /* ad port to transmit queue is send was incomplete or unsuccessful */
-  if( bg_serial_transmit(p) <= 0) bg_serial_addPending(p); 
+  DEBUG_PRINTK("trace: %s sndcnt=%d \n",__func__, bg_serial.sndcnt);
+  /* add port to transmit queue is send was incomplete or unsuccessful */
+  if( bg_serial_transmit(p) <= 0) {
+    BUG_ON(bg_serial_getNextPending(p) != NULL);
+    // add port to end of send list
+    bg_serial_addPending(p); 
+  }
   return;
 }
 
 static void 
 bg_serial_stop_rx(struct uart_port *p)
 {
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
   return;
 }
 
 static void
 bg_serial_enable_ms(struct uart_port *p)
 {
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
   return;
 }
 
 static void
 bg_serial_break_ctl(struct uart_port *p, int ctl)
 {
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
   return;
 }
 
@@ -430,11 +539,12 @@ bg_serial_startup(struct uart_port *p)
   struct bg_serial_port_info *pi = &(bg_serial.pinfo[i]); 
   int hk = pi->route.receive_id & BG_SERIAL_MAX_PORT; 
 
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
 
   BUG_ON(pi->next != NULL);
   pi->next =  bg_serial.openports[hk];
-
+  pi->opencnt++;
+  BUG_ON(pi->opencnt <= 0);
   bg_serial.openports[hk] = pi; 
 
   return 0; 
@@ -448,7 +558,7 @@ bg_serial_shutdown(struct uart_port *p)
   struct bg_serial_port_info *t, *pi = &(bg_serial.pinfo[i]); 
   int hk = pi->route.receive_id & BG_SERIAL_MAX_PORT; 
 
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
 
   t=bg_serial.openports[hk];
 
@@ -461,7 +571,8 @@ bg_serial_shutdown(struct uart_port *p)
     BUG_ON(t == NULL || t->next != pi);
     t->next = t->next->next;
   }
-
+  pi->opencnt--;
+  BUG_ON(pi->opencnt < 0);
   pi->next = NULL;
   return;
 }
@@ -470,7 +581,7 @@ static void
 bg_serial_set_termios(struct uart_port *p, struct ktermios *new,
 	    struct ktermios *old)
 {
-  printk("%s: %d\n",__func__,p->line);  
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);  
   /*
   set_termios(port,termios,oldtermios)
 	Change the port parameters, including word length, parity, stop
@@ -525,7 +636,7 @@ bg_serial_set_termios(struct uart_port *p, struct ktermios *new,
 static const char *
 bg_serial_type(struct uart_port *p)
 {
-  printk("%s: {%d} %s \n",__func__,p->line, BG_SERIAL_TYPE);
+  VERBOSE_PRINTK("%s: {%d} %s \n",__func__,p->line, BG_SERIAL_TYPE);
   return (p->type == BG_SERIAL_PORT_TYPE) ? BG_SERIAL_TYPE : NULL;
 }
 
@@ -536,7 +647,7 @@ bg_serial_type(struct uart_port *p)
 static void
 bg_serial_release_port(struct uart_port *p)
 {
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
   return;
 }
 
@@ -547,14 +658,14 @@ bg_serial_release_port(struct uart_port *p)
 static int		
 bg_serial_request_port(struct uart_port *p)
 {
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
   return 0;
 }
 
 static void
 bg_serial_config_port(struct uart_port *p, int flags)
 {
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
   if (bg_serial_request_port(p)==0)  p->type = BG_SERIAL_PORT_TYPE;
   return;
 }
@@ -562,7 +673,7 @@ bg_serial_config_port(struct uart_port *p, int flags)
 static int 
 bg_serial_verify_port(struct uart_port *p, struct serial_struct *s)
 {
-  printk("%s: %d\n",__func__,p->line);
+  VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
   /* turn off core coe modification of port parms by returning -EINVAL */
   return -EINVAL;
 }
@@ -597,7 +708,7 @@ bg_serial_setup_ports(void)
   struct uart_port *port;
   struct bg_serial_port_info *pi; 
 
-  printk("%s\n",__func__);
+  VERBOSE_PRINTK("%s\n",__func__);
   memset(bg_serial.pinfo, 0, sizeof(bg_serial.pinfo));
   memset(bg_serial.ports, 0, sizeof(bg_serial.ports));
   memset(bg_serial.openports, 0, sizeof(bg_serial.openports));
@@ -619,7 +730,7 @@ bg_serial_setup_ports(void)
     port->membase   = NULL;
     port->ops       = &bg_serial_ops;
     port->irq       = 1; /* bogus non-zero value */
-    port->flags     =  /* UPF_FIXED_PORT  |*/  UPF_BOOT_AUTOCONF;
+    port->flags     = UPF_FIXED_PORT  |  UPF_BOOT_AUTOCONF;
 
     if  (uart_add_one_port(&bg_serial.uart_driver, port)<0) {
       char buf[160];
@@ -678,14 +789,13 @@ MODULE_LICENSE("GPL");
 
 static int proc_do_bg_serial (ctl_table *ctl, int write, struct file * filp,
 			   void __user *buffer, size_t *lenp, loff_t *ppos)
-{
-  printk(KERN_INFO "%s: enter \n", __func__);
+ {
     char *page = (char*)get_zeroed_page(GFP_KERNEL);
     char *p;
     struct bg_serial_port_info *info = (struct bg_serial_port_info *)
       ctl->extra1;
     int idx = (int)ctl->extra2;
-    int len, rc = 0, validx;
+    int len, rc = 0, validx, flags;
 
     BUG_ON(!info || idx < 0 || idx > BG_SERIAL_MAX_PORT);
 
@@ -694,6 +804,13 @@ static int proc_do_bg_serial (ctl_table *ctl, int write, struct file * filp,
 
     if (write) {
 	int val[3];
+
+	/* check if this port is open */ 
+	spin_lock_irqsave(&(bg_serial.ports[idx].lock), flags);  
+	if (info->opencnt) {
+	  rc = -EBUSY;
+	  goto out;
+	}
 
 	if (*lenp >= PAGE_SIZE || copy_from_user(page, buffer, *lenp)) {
 	    rc = -EFAULT;
@@ -733,10 +850,8 @@ static int proc_do_bg_serial (ctl_table *ctl, int write, struct file * filp,
 	    else{
 	      info->route.dest.p2p.pclass = BG_SERIAL_TREE_ROUTE;
 	      info->route.dest.p2p.p2p = 1;
-	      info->route.dest.p2p.vector = val[2];
-  
-	    }
-	       
+	      info->route.dest.p2p.vector = val[2];  
+	    }	       
 	}
     } else {
 	len = sprintf(page, "%d %d ", info->route.send_id,
@@ -758,11 +873,9 @@ static int proc_do_bg_serial (ctl_table *ctl, int write, struct file * filp,
 	*lenp = len;
 	*ppos += len;
     }
-
  out:
     free_page((unsigned long)page);
-    
-    printk(KERN_INFO "%s: exit \n", __func__);
+    if (write) spin_unlock_irqrestore(&(bg_serial.ports[idx].lock), flags);  
     return rc;
 }
 
