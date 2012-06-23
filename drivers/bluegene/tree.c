@@ -49,7 +49,6 @@
 MODULE_DESCRIPTION(DRV_DESC);
 MODULE_AUTHOR("IBM, Project Kittyhawk");
 
-
 //#define TRACE(x...) printk(x)
 #define TRACE(x...)
 
@@ -61,12 +60,25 @@ MODULE_AUTHOR("IBM, Project Kittyhawk");
 #define TREE_LNKHDRLEN		(sizeof(struct bglink_hdr_tree))
 #define TREE_FRAGPAYLOAD	(TREE_PAYLOAD - TREE_LNKHDRLEN)
 #define TREE_SKB_ALIGN		16
+#define TREE_INTERRUPT_SKIP_COUNT 10
+
+#define MAILBOX
+#ifdef MAILBOX
+#define MAILBOX_PRINTK(...) mailbox_puts(__VA_ARGS__)
+#else
+#define MAILBOX_PRINTK(...)
+#endif 
+/*
+  char buf[160];
+  sprintf(buf, "%s: sndcnt=%d\n", __func__, bg_serial.sndcnt);
+  MAILBOX_PRINTK(buf, strlen(buf));
+*/
 
 extern void bgic_raise_irq(unsigned int hwirq);
 static int bgtree_proc_register(struct bg_tree *tree);
 static int bgtree_proc_unregister(struct bg_tree *tree);
 
-#if 1
+#if 0
 extern void bg_serial_sndcnt_inc(int );
 extern void bg_serial_rcvcnt_inc(int );
 extern int  bg_serial_sndcnt(void);
@@ -474,19 +486,14 @@ static void bgtree_receive(struct bg_tree *tree, unsigned channel)
 	// read the first 16 bytes from the payload
 	in_be128(&lnkhdr, (void*)chn->mioaddr + _BGP_TRx_DR);
 
+	
+
 	TRACE("bgnet: stat=%x, dst=%x, hdr: conn=%x, "
 	      "this_pkt=%x, tot_pkt=%x, dst=%x, src=%x]\n",
 	      status.raw, dst.raw, lnkhdr.conn_id,
 	      lnkhdr.this_pkt, lnkhdr.total_pkt,
 	      lnkhdr.dst_key, lnkhdr.src_key);
 
-	if (lnkhdr.opt.opt_con.len == 1) {
-	  char buf[80];
-	  sprintf(buf, "trp: %d: %d\n", lnkhdr.lnk_proto, lnkhdr.opt.opt_con.len);
-	  mailbox_puts(buf, strlen(buf));
-	}
-
-	if (lnkhdr.lnk_proto == BGLINK_P_SERIAL) bg_serial_rcvcnt_inc(1);
 	// early check if packet is valid
 	if (lnkhdr.total_pkt < 1 || lnkhdr.this_pkt >= lnkhdr.total_pkt) {
 	    drop = 1;
@@ -551,7 +558,6 @@ static void bgtree_receive(struct bg_tree *tree, unsigned channel)
 	    payloadptr = fskb->payload + (lnkhdr.this_pkt * TREE_FRAGPAYLOAD);
 	    //printk("tree: receiving payload to %p\n", payloadptr);
 
-
 	    // read remaining payload
 
 	    if ((((u32) payloadptr) & 0xF) == 0) {
@@ -559,6 +565,7 @@ static void bgtree_receive(struct bg_tree *tree, unsigned channel)
 	    } else {
 		ins_be128(payloadptr, (void*)chn->mioaddr + _BGP_TRx_DR,
 			  (TREE_PAYLOAD - sizeof(struct bglink_hdr_tree)) / 16);
+
 	    }
 
 	    fskb->jiffies = jiffies;
@@ -578,10 +585,10 @@ static void bgtree_receive(struct bg_tree *tree, unsigned channel)
 		// deliver to upper protocol layers
 		rcu_read_lock();
 		proto = bglink_find_proto(lnkhdr.lnk_proto);
-		if (lnkhdr.lnk_proto == BGLINK_P_SERIAL) bg_serial_rcvcnt_inc(1000);
 		if (proto && ((lnkhdr.src_key != tree->nodeid) ||
 			      proto->receive_from_self))
 		{
+		  // DEBUG: we are not getting here...
 		    proto->tree_rcv(skb, &lnkhdr);
 		    chn->delivered++;
 		} else {
@@ -599,6 +606,13 @@ static void bgtree_receive(struct bg_tree *tree, unsigned channel)
     }
 }
 
+volatile int bgtree_receive_interrupt_skip = 0;
+
+extern void 
+bgtree_receive_interrupt_skip_toggle(void)
+{
+   bgtree_receive_interrupt_skip = ! bgtree_receive_interrupt_skip;
+}
 
 static irqreturn_t bgtree_receive_interrupt(int irq, void *dev)
 {
@@ -622,9 +636,16 @@ static irqreturn_t bgtree_receive_interrupt(int irq, void *dev)
 	// XXX: handle error situation
     }
 
-    for (chn = 0; chn < BGP_MAX_CHANNEL; chn++)
+    if (bgtree_receive_interrupt_skip==0) {
+      for (chn = 0; chn < BGP_MAX_CHANNEL; chn++)
 	if (pend_irq & tree->chn[chn].irq_rcv_pending_mask)
-	    bgtree_receive(tree, chn);
+	  bgtree_receive(tree, chn);
+    } else {
+      bgtree_receive_interrupt_skip++;
+      if (bgtree_receive_interrupt_skip == TREE_INTERRUPT_SKIP_COUNT) {
+	bgtree_receive_interrupt_skip = 0;
+      }
+    }
 
     spin_unlock(&tree->irq_lock);
 
@@ -731,13 +752,6 @@ int __bgtree_xmit(struct bg_tree *tree, int chnidx, union bgtree_header dest,
     TRACE("bgnet: transmit: dest=%08x, len=%u, type=%d, chn=%d\n",
 	  dest.raw, len, lnkhdr->lnk_proto, chnidx);
 
-    if (lnkhdr->opt.opt_con.len == 1) {
-      char buf[160];
-      sprintf(buf, "bgtree xmit: opt_con.len=1: dest=%08x, len=%u, type=%d, chn=%d data=%c\n",
-	      dest.raw, len, lnkhdr->lnk_proto, chnidx, ((char *)data)[0]);	      
-      mailbox_puts(buf, strlen(buf));
-    }
-    
     if (!(mfmsr() & MSR_FP))
 	enable_kernel_fp();
 
@@ -771,7 +785,6 @@ int __bgtree_xmit(struct bg_tree *tree, int chnidx, union bgtree_header dest,
 	    bgtree_inject_packet(&dest.raw, lnkhdr, data, chn->mioaddr);
 	    data += TREE_FRAGPAYLOAD;
 	    len -= TREE_FRAGPAYLOAD;
-	    if (lnkhdr->lnk_proto == BGLINK_P_SERIAL) bg_serial_sndcnt_inc(1);
 	} else {
 	    // general case
 
@@ -1227,9 +1240,6 @@ static int proc_do_status (ctl_table *ctl, int write, struct file * filp,
 		   tree->chn[0].delivered, tree->chn[1].delivered,
 		   tree->fragment_timeout);
 
-    len += sprintf(page + len, "bg_serial.sndcnt=%d bg_serial.rcvcnt=%d\n", 
-		   bg_serial_sndcnt(), bg_serial_rcvcnt());
-
     spin_unlock_irqrestore(&tree->lock, flags);
 
     len -= *ppos;
@@ -1519,6 +1529,15 @@ parse_err:
     return -EINVAL;
 }
 
+static int proc_do_skip(ctl_table *ctl, int write, struct file *filp,
+			void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+  if (write) {
+    bgtree_receive_interrupt_skip_toggle();
+  } 
+  return 0;
+}
+
 #define SYSCTL_ROUTE(x)				\
     {						\
 	.ctl_name	= CTL_UNNUMBERED,	\
@@ -1556,6 +1575,12 @@ static struct ctl_table tree_table[] = {
 	.procname = "mcast_filter",
 	.mode = 0644,
 	.proc_handler = proc_do_mcast_filter,
+    },
+    {
+	.ctl_name = CTL_UNNUMBERED,
+	.procname = "skip",
+	.mode = 0644,
+	.proc_handler = proc_do_skip,
     },
     { .ctl_name = 0 }
 };
@@ -1603,9 +1628,6 @@ static int bgtree_proc_unregister(struct bg_tree *tree)
  * Deactivates tree routes and drains tree fifos.
  * Note: this is independent of the tree driver!
  */
-
-extern void mailbox_puts(const unsigned char *s, int count);
-
 void bluegene_tree_deactivate(void)
 {
     int c, i;

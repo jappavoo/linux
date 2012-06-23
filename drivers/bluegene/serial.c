@@ -34,6 +34,8 @@
 extern void mailbox_puts(const unsigned char *s, int count);
 
 int bg_serial_tree_rcv_interrupt(struct sk_buff *skb, struct bglink_hdr_tree *lhdr);
+
+static void bg_serial_stop_tx(struct uart_port *p);
 static int bg_serial_tree_xmit_interrupt(int chn);
 
 struct bg_serial_route {
@@ -44,8 +46,8 @@ struct bg_serial_route {
 };
 
 //#define VERBOSE
-#define DEBUG 
-#define MAILBOX
+//#define DEBUG 
+//#define MAILBOX
 
 #ifdef VERBOSE
 #define VERBOSE_PRINTK(...) printk(__VA_ARGS__)
@@ -124,13 +126,13 @@ bg_serial_sndcnt_inc(int inc)
   int flags;
   char buf[160];
   spin_lock_irqsave(&(bg_serial.lock), flags); 
-  printk("! %s: inc:%d sndcnt:%d",__func__,inc, bg_serial.sndcnt);
+  //VERBOSE_PRINTK("! %s: inc:%d sndcnt:%d",__func__,inc, bg_serial.sndcnt);
   bg_serial.sndcnt += inc;
  
   sprintf(buf, "%s: sndcnt=%d\n", __func__, bg_serial.sndcnt);
   printk(buf);
   MAILBOX_PRINTK(buf, strlen(buf));
-  printk("!! %s: inc:%d sndcnt:%d",__func__,inc, bg_serial.sndcnt);
+  VERBOSE_PRINTK("%s: inc:%d sndcnt:%d",__func__,inc, bg_serial.sndcnt);
   spin_unlock_irqrestore(&(bg_serial.lock), flags); 
   return;
 }
@@ -148,13 +150,11 @@ bg_serial_rcvcnt_inc(int inc)
 {
   int flags;
   char buf[160];
-  //  volatile int i;
   spin_lock_irqsave(&(bg_serial.lock), flags);
-  printk("! %s: inc:%d rcvcnt:%d\n",__func__,inc, bg_serial.rcvcnt);
   bg_serial.rcvcnt += inc;
   sprintf(buf, "%s: rcvcnt={%d}\n", __func__, bg_serial.rcvcnt);
   MAILBOX_PRINTK(buf, strlen(buf));
-  printk("!! %s: inc:%d rcvcnt:%d\n",__func__,inc, bg_serial.rcvcnt);
+  VERBOSE_PRINTK("%s: inc:%d rcvcnt:%d\n",__func__,inc, bg_serial.rcvcnt);
   /*
   if (bg_serial.rcvcnt == 4096) {
     bgtree_receive_interrupt_skip_toggle();
@@ -232,22 +232,23 @@ static int bg_serial_transmit(struct uart_port *port)
 {
   struct circ_buf *xmit  = &port->info->xmit; 
   struct bg_serial_port_info *pi = &(bg_serial.pinfo[port->line]);
-  unsigned int t,r,l; 
+  unsigned int total, remaining, len, status; 
   char buf[160];
   
   /* xon/xoff char */
   if (port->x_char) {
-    BUG_ON(1);
+    // BUG_ON(1);
     // handle xon/xoff software flow control as a high priority
     // single transmission
-    if (_bg_serial_transmit(pi, &(port->x_char),1) < 0) {
-      // since we noticed that the tree is busy, ensure that the the low-water
+    if (_bg_serial_transmit(pi, &(port->x_char), 1) < 0) {
+      // since we noticed that the tree is busy, ensurxcthat the the low-water
       // mark interrupt is enabled to ensure that our flush callback will be invoked
       // when the tree fifo has room.  We don't need to disable it as this is handled
       // automatically by the link code given that there maybe multiple protocols
       // using the tree.
       return 0;
-    } else {
+    } else { 
+      mailbox_puts("bg_serial_transmit: X_CHAR SENT \n",34);
       port->x_char = 0;
       port->icount.tx++;
       return 1;
@@ -256,37 +257,44 @@ static int bg_serial_transmit(struct uart_port *port)
 
   // return if uart is empty or stopped 
   if (uart_circ_empty(xmit) || uart_tx_stopped(port)){
-    DEBUG_PRINTK("%s error: uart is empty or stopped \n",__func__);
-    return 0;
+      mailbox_puts("bg_serial_transmit: UART EMPTY / STOPPED\n",42);
+      bg_serial_stop_tx(port);
+    return 0; 
   }
 
-  r = t = uart_circ_chars_pending(xmit);
   // continue sending blocks of FIFO_SIZE until there is nothing left to send
-  while (r > 0) {
-    l = (r < BG_SERIAL_FIFO_SIZE) ? r : BG_SERIAL_FIFO_SIZE;    
-    if (_bg_serial_transmit(pi, &(xmit->buf[xmit->tail]), l) < 0)  {
-      DEBUG_PRINTK("%s transmit failed;  attempted:%d remaining:%d \n",__func__,t,r);
+  remaining = total = uart_circ_chars_pending(xmit);
+  while (remaining > 0) {
+    len = ( remaining < BG_SERIAL_FIFO_SIZE ) ? remaining : BG_SERIAL_FIFO_SIZE;    
+    status = _bg_serial_transmit(pi, &(xmit->buf[xmit->tail]), len);
+   
+    // if send failed, process and return
+    if ( status < 0)  {
+      DEBUG_PRINTK("%s transmit failed;  attempted:%d remaining:%d \n",__func__,total,remaining);
       sprintf(buf, "%s: transmit failed:  attemted:%d sndcnt:%d \n", __func__, bg_serial.sndcnt, bg_serial.sndcnt);
       MAILBOX_PRINTK(buf, strlen(buf));
-      // update xmit buffer for partial sends
-      if(t-r){
-	xmit->tail = (xmit->tail + (t-r)) & (UART_XMIT_SIZE - 1);
-	port->icount.tx += (t-r);
-	bg_serial_sndcnt_inc(t-r);
+     
+      // if it was a partial send
+      if(total - remaining){
+	xmit->tail = (xmit->tail + (total-remaining)) & (UART_XMIT_SIZE - 1);
+	port->icount.tx += (total-remaining);
+	bg_serial_sndcnt_inc(total-remaining);
 	return -1;
       }
+      // return 0 is no data was sent
       return 0; 
     } 
-    DEBUG_PRINTK("%s sent=%d sndcnt=%d \n",__func__, l, bg_serial.sndcnt);
-    sprintf(buf, "%s: sent=%d sndcnt=%d \n", __func__, l, bg_serial.sndcnt );
+    DEBUG_PRINTK("%s sent=%d sndcnt=%d \n",__func__, len, bg_serial.sndcnt);
+    sprintf(buf, "%s: sent=%d sndcnt=%d \n", __func__, len, bg_serial.sndcnt );
     MAILBOX_PRINTK(buf, strlen(buf));
 
-    r -= l;
-  }
-  /* if send of all pending data worked then updated based on t */
-  xmit->tail = (xmit->tail + t) & (UART_XMIT_SIZE - 1);
-  port->icount.tx += t;
-  bg_serial_sndcnt_inc(t);
+    /* record sent data  */
+    remaining -= len;
+    xmit->tail = (xmit->tail + len) & (UART_XMIT_SIZE - 1);
+    port->icount.tx += len;
+    bg_serial_sndcnt_inc(len);
+
+  }/* end of while loop */
 
   /* wake up after send */
   /* number of characters left in xmit buffer is less than WAKEUP_CHARS then we ask for more */
@@ -388,8 +396,8 @@ bg_serial_find_openport(u32 destkey)
     char buf[160];
     sprintf(buf, "ERROR: %s: no open port found for destkey=%x\n",
 	    __func__, destkey);
-    mailbox_puts(buf, strlen(buf));
-    printk(buf);
+    MAILBOX_PRINTK(buf, strlen(buf));
+    VERBOSE_PRINTK(buf);
   }
 
   return NULL;
@@ -410,16 +418,16 @@ bg_serial_tree_rcv_interrupt(struct sk_buff *skb, struct bglink_hdr_tree *lhdr)
   if ((p = bg_serial_find_openport(lhdr->dst_key)) == NULL) {
 #if 0
     int i;
-    printk("%s: dropping data: dst_key=%08x(%d) src_key=%08x(%d) %d\n",
+    DEBUG_PRINTK("%s: dropping data: dst_key=%08x(%d) src_key=%08x(%d) %d\n",
 	   __func__, 
 	   lhdr->dst_key, lhdr->dst_key,
 	   lhdr->src_key, lhdr->src_key,
 	   lhdr->opt.opt_con.len);
     for (i=0; i<lhdr->opt.opt_con.len; i++) {
-      printk("%02x (%c) ", skb->data[i], skb->data[i]);
+      DEBUG_PRINTK("%02x (%c) ", skb->data[i], skb->data[i]);
       if (i % 16 == 0) printk("\n");
     }
-    printk("\n");
+    DEBUG_PRINTK("\n");
 #endif
     dev_kfree_skb(skb); 
     return 0;
@@ -436,8 +444,8 @@ bg_serial_tree_rcv_interrupt(struct sk_buff *skb, struct bglink_hdr_tree *lhdr)
   DEBUG_PRINTK("%s recived len=%d, trim(skb->len)=%d rcvcnt=%d \n",__func__, len, skb->len, bg_serial.rcvcnt);  
 
   len = tty_insert_flip_string(p->info->tty, skb->data, skb->len);
-  sprintf(buf, "%s: TTY READ bs:%d COUNT:%d FLAGS: %lX \n", __func__, len, p->info->tty->count,  p->info->tty->flags);
-  mailbox_puts(buf, strlen(buf));
+  sprintf(buf, "%s: TTY READ atmpt_snd:%d, actl_snd:%d rcvcnt:%d TTYflag:%lX, TTYbuf:%d \n", __func__, lhdr->opt.opt_con.len, len, bg_serial.rcvcnt, p->info->tty->flags, p->info->tty->receive_room);
+  MAILBOX_PRINTK(buf, strlen(buf));
   bg_serial_rcvcnt_inc(len);
 
   if(lhdr->opt.opt_con.len != len)
@@ -494,6 +502,11 @@ static void
 bg_serial_stop_tx(struct uart_port *p)
 {
   VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
+  // set a flag to prevent writes?  
+  char buf[50];
+  sprintf(buf, "%s: sendcnt:%d\n",__func__,bg_serial.sndcnt);
+  // set a flag to prevent writes
+  mailbox_puts(buf, strlen(buf));
   return;
 }
 
@@ -505,6 +518,8 @@ bg_serial_start_tx(struct uart_port *p)
   if( bg_serial_transmit(p) <= 0) {
     BUG_ON(bg_serial_getNextPending(p) != NULL);
     // add port to end of send list
+    // If a flow control (x_char) was unsuccessful, we may
+    // not want to put it at the END of the send queue.
     bg_serial_addPending(p); 
   }
   return;
@@ -514,6 +529,7 @@ static void
 bg_serial_stop_rx(struct uart_port *p)
 {
   VERBOSE_PRINTK("%s: %d\n",__func__,p->line);
+  mailbox_puts("bg_serial_stop_rx \n",20);
   return;
 }
 
@@ -735,7 +751,7 @@ bg_serial_setup_ports(void)
     if  (uart_add_one_port(&bg_serial.uart_driver, port)<0) {
       char buf[160];
       sprintf(buf, "%s: add failed: i=%d\n", __func__, i);
-      mailbox_puts(buf, strlen(buf));  
+      MAILBOX_PRINTK(buf, strlen(buf));  
     }
   }
 }
@@ -758,7 +774,7 @@ static int __init bg_serial_init(void)
   if (rc) {
     char buf[160];
     sprintf(buf, "%s: register failed: rc=%d\n", __func__, rc);
-    mailbox_puts(buf, strlen(buf));  
+    MAILBOX_PRINTK(buf, strlen(buf));  
     return rc;
   }
 
@@ -773,7 +789,7 @@ static int __init bg_serial_init(void)
 
 static void __exit bg_serial_exit(void)
 {
-  printk(KERN_INFO "Serial: bg serial driver exit\n");
+  DEBUG_PRINTK(KERN_INFO "Serial: bg serial driver exit\n");
   uart_unregister_driver(&bg_serial.uart_driver);
   bg_serial_proc_unregister(&bg_serial.sysctl_header);
 }
